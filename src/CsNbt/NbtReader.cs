@@ -31,7 +31,7 @@ public sealed class NbtReader
         if (depth >= _options.MaxDepth) throw new NbtException($"NBT nesting exceeds the configured depth of {_options.MaxDepth}.");
         return type switch
         {
-            NbtTagType.Byte => new NbtByte(_binary.ReadByte()),
+            NbtTagType.Byte => NbtByte.FromRawByte(_binary.ReadByte()),
             NbtTagType.Short => new NbtShort(_binary.ReadInt16()),
             NbtTagType.Int => new NbtInt(_binary.ReadInt32()),
             NbtTagType.Long => new NbtLong(_binary.ReadInt64()),

@@ -48,6 +48,7 @@ static void AllEncodingsRoundTrip()
     {
         NbtDocument parsed = NbtDocument.Parse(CreateDocument().ToArray(options), options);
         var root = As<NbtCompound>(parsed.Root);
+        Equal((sbyte)-1, root.Get<NbtByte>("byte").Value);
         Equal(-123456, root.Get<NbtInt>("int").Value);
         Equal(-9_876_543_210L, root.Get<NbtLong>("long").Value);
         Equal("héllø 🌍", root.Get<NbtString>("text").Value);
@@ -117,7 +118,7 @@ static void HomogeneousLists()
 static NbtDocument CreateDocument()
 {
     var root = new NbtCompound()
-        .Add("byte", new NbtByte(255))
+        .Add("byte", NbtByte.FromRawByte(255))
         .Add("short", new NbtShort(-3210))
         .Add("int", -123456)
         .Add("long", -9_876_543_210L)

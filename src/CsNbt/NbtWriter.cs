@@ -31,7 +31,7 @@ public sealed class NbtWriter
         if (depth >= _options.MaxDepth) throw new NbtException($"NBT nesting exceeds the configured depth of {_options.MaxDepth}.");
         switch (tag)
         {
-            case NbtByte value: _binary.WriteByte(value.Value); break;
+            case NbtByte value: _binary.WriteByte(unchecked((byte)value.Value)); break;
             case NbtShort value: _binary.WriteInt16(value.Value); break;
             case NbtInt value: _binary.WriteInt32(value.Value); break;
             case NbtLong value: _binary.WriteInt64(value.Value); break;

@@ -9,8 +9,8 @@ public abstract class NbtTag
 {
     public abstract NbtTagType Type { get; }
 
-    public static implicit operator NbtTag(byte value) => new NbtByte(value);
-    public static implicit operator NbtTag(sbyte value) => new NbtByte(unchecked((byte)value));
+    public static implicit operator NbtTag(byte value) => NbtByte.FromRawByte(value);
+    public static implicit operator NbtTag(sbyte value) => new NbtByte(value);
     public static implicit operator NbtTag(short value) => new NbtShort(value);
     public static implicit operator NbtTag(int value) => new NbtInt(value);
     public static implicit operator NbtTag(long value) => new NbtLong(value);
@@ -22,12 +22,44 @@ public abstract class NbtTag
     public static implicit operator NbtTag(long[] value) => new NbtLongArray(value);
 }
 
-public sealed class NbtByte(byte value) : NbtTag { public override NbtTagType Type => NbtTagType.Byte; public byte Value { get; } = value; public bool BooleanValue => Value != 0; }
-public sealed class NbtShort(short value) : NbtTag { public override NbtTagType Type => NbtTagType.Short; public short Value { get; } = value; }
-public sealed class NbtInt(int value) : NbtTag { public override NbtTagType Type => NbtTagType.Int; public int Value { get; } = value; }
-public sealed class NbtLong(long value) : NbtTag { public override NbtTagType Type => NbtTagType.Long; public long Value { get; } = value; }
-public sealed class NbtFloat(float value) : NbtTag { public override NbtTagType Type => NbtTagType.Float; public float Value { get; } = value; }
-public sealed class NbtDouble(double value) : NbtTag { public override NbtTagType Type => NbtTagType.Double; public double Value { get; } = value; }
+public sealed class NbtByte(sbyte value) : NbtTag
+{
+    public override NbtTagType Type => NbtTagType.Byte;
+    public sbyte Value { get; } = value;
+    public bool BooleanValue => Value != 0;
+
+    public static NbtByte FromRawByte(byte value) => new(unchecked((sbyte)value));
+}
+
+public sealed class NbtShort(short value) : NbtTag
+{
+    public override NbtTagType Type => NbtTagType.Short;
+    public short Value { get; } = value;
+}
+
+public sealed class NbtInt(int value) : NbtTag
+{
+    public override NbtTagType Type => NbtTagType.Int;
+    public int Value { get; } = value;
+}
+
+public sealed class NbtLong(long value) : NbtTag
+{
+    public override NbtTagType Type => NbtTagType.Long;
+    public long Value { get; } = value;
+}
+
+public sealed class NbtFloat(float value) : NbtTag
+{
+    public override NbtTagType Type => NbtTagType.Float;
+    public float Value { get; } = value;
+}
+
+public sealed class NbtDouble(double value) : NbtTag
+{
+    public override NbtTagType Type => NbtTagType.Double;
+    public double Value { get; } = value;
+}
 public sealed class NbtString : NbtTag
 {
     public NbtString(string value) => Value = value ?? throw new ArgumentNullException(nameof(value));
@@ -82,7 +114,8 @@ public sealed class NbtList : NbtTag, IReadOnlyList<NbtTag>
         return this;
     }
 
-    public IEnumerator<NbtTag> GetEnumerator() => _items.GetEnumerator();
+    public List<NbtTag>.Enumerator GetEnumerator() => _items.GetEnumerator();
+    IEnumerator<NbtTag> IEnumerable<NbtTag>.GetEnumerator() => GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
@@ -104,6 +137,7 @@ public sealed class NbtCompound : NbtTag, IReadOnlyDictionary<string, NbtTag>
     public bool Remove(string key) => _values.Remove(key);
     public T Get<T>(string key) where T : NbtTag => _values[key] as T ?? throw new InvalidCastException($"Tag '{key}' is not {typeof(T).Name}.");
     public bool TryGet<T>(string key, out T? value) where T : NbtTag { value = _values.GetValueOrDefault(key) as T; return value is not null; }
-    public IEnumerator<KeyValuePair<string, NbtTag>> GetEnumerator() => _values.GetEnumerator();
+    public Dictionary<string, NbtTag>.Enumerator GetEnumerator() => _values.GetEnumerator();
+    IEnumerator<KeyValuePair<string, NbtTag>> IEnumerable<KeyValuePair<string, NbtTag>>.GetEnumerator() => GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }

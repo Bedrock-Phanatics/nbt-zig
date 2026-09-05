@@ -2,14 +2,21 @@ name: ci
 on:
   push:
   pull_request:
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          dotnet-version: 10.0.x
-      - run: dotnet --version
-      - run: dotnet build CsNbt.slnx --configuration Release
-      - run: dotnet run --project tests/CsNbt.Tests --configuration Release --no-build
+          version: 0.16.0
+      - run: zig version
+      - run: zig fmt --check build.zig src bench
+      - run: zig build test
+      - run: zig build test --fuzz=100K
+      - run: zig build -Doptimize=ReleaseSafe test
+      - run: zig build bench

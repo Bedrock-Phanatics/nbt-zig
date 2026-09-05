@@ -1,4 +1,0 @@
-<Solution>
-  <Project Path="src/CsNbt/CsNbt.csproj" />
-  <Project Path="tests/CsNbt.Tests/CsNbt.Tests.csproj" />
-</Solution>

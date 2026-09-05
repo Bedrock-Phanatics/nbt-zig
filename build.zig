@@ -37,6 +37,27 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&bench.step);
 
+    const fuzz_options = b.addOptions();
+    fuzz_options.addOption(usize, "iterations", b.option(
+        usize,
+        "fuzz-iterations",
+        "Number of deterministic decoder fuzz cases",
+    ) orelse 100_000);
+    const fuzz = b.addExecutable(.{
+        .name = "nbt-fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz.zig"),
+            .target = target,
+            .optimize = .ReleaseSafe,
+            .imports = &.{
+                .{ .name = "nbt", .module = nbt },
+                .{ .name = "config", .module = fuzz_options.createModule() },
+            },
+        }),
+    });
+    const run_fuzz = b.addRunArtifact(fuzz);
+    const fuzz_step = b.step("fuzz", "Run deterministic decoder fuzz cases");
+    fuzz_step.dependOn(&run_fuzz.step);
     const run_bench = b.addRunArtifact(bench);
     const bench_step = b.step("bench", "Run reproducible ReleaseFast benchmarks");
     bench_step.dependOn(&run_bench.step);

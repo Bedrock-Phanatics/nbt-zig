@@ -73,10 +73,11 @@ options.max_total_decoded_bytes = 32 * 1024 * 1024; // owned tree memory
 
 ```console
 zig build test
+zig build fuzz
 zig build bench
 ```
 
-The test suite uses `std.testing.allocator` for leak detection and covers all tag families and encodings, golden payloads, modified UTF-8, stream I/O, compression, duplicate rejection, independent resource limits, truncation at every byte, malformed inputs, homogeneity, round trips, and deterministic arbitrary-input decoding. `zig build test --fuzz` exercises the native Zig 0.16 fuzz target.
+The test suite uses `std.testing.allocator` for leak detection and covers all tag families and encodings, golden payloads, modified UTF-8, stream I/O, compression, duplicate rejection, independent resource limits, truncation at every byte, malformed inputs, homogeneity, round trips, and deterministic arbitrary-input decoding. `zig build fuzz` runs 100,000 deterministic malformed-input cases with allocation leak checking. Override the count with `-Dfuzz-iterations=N`.
 
 The benchmark reports measured throughput and latency for small, medium, and large-array encode/decode workloads. Results depend on the machine and should be collected locally rather than treated as universal claims.
 

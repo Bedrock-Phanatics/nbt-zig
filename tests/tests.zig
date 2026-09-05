@@ -322,32 +322,6 @@ test "builder permits only an empty TAG_End list" {
     try std.testing.expectEqual(@as(usize, 0), list.list.items.len);
 }
 
-test "native fuzz target" {
-    try std.testing.fuzz({}, fuzzOne, .{});
-}
-
-fn fuzzOne(_: void, smith: *std.testing.Smith) !void {
-    const allocator = std.testing.allocator;
-    var bytes: [4096]u8 = undefined;
-    const len: usize = smith.valueRangeAtMost(u16, 0, bytes.len);
-    smith.bytes(bytes[0..len]);
-    var options: nbt.Options = switch (smith.value(nbt.Encoding)) {
-        .java => .java,
-        .bedrock => .bedrock,
-        .bedrock_network => .bedrock_network,
-    };
-    options.max_depth = 32;
-    options.max_collection_length = 1024;
-    options.max_compound_entries = 1024;
-    options.max_string_bytes = 1024;
-    options.max_input_bytes = bytes.len;
-    options.max_total_decoded_bytes = 64 * 1024;
-    if (nbt.parse(allocator, bytes[0..len], options)) |document_value| {
-        var document = document_value;
-        document.deinit(allocator);
-    } else |_| {}
-}
-
 test "stream APIs propagate success and I/O failures" {
     const allocator = std.testing.allocator;
     var document = try nbt.Document.init(allocator, "stream", .{ .int = 42 });

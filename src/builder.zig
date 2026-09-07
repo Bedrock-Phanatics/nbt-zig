@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const types = @import("types.zig");
 
 const Allocator = std.mem.Allocator;
@@ -26,25 +27,48 @@ pub const List = struct {
     items: std.ArrayList(types.Tag) = .empty,
 
     pub fn init(allocator: Allocator, element_type: types.TagType) List {
-        return .{ .allocator = allocator, .element_type = element_type };
+        return .{
+            .allocator = allocator,
+            .element_type = element_type,
+        };
     }
 
     pub fn deinit(self: *List) void {
-        for (self.items.items) |*item| item.deinit(self.allocator);
+        for (self.items.items) |*item| {
+            item.deinit(self.allocator);
+        }
+
         self.items.deinit(self.allocator);
         self.* = undefined;
     }
 
-    pub fn append(self: *List, value: types.Tag) (error{ TypeMismatch, InvalidListType } || Allocator.Error)!void {
-        if (self.element_type == .end or value.tagType() == .end) return error.InvalidListType;
-        if (value.tagType() != self.element_type) return error.TypeMismatch;
+    pub fn append(
+        self: *List,
+        value: types.Tag,
+    ) (error{ TypeMismatch, InvalidListType } || Allocator.Error)!void {
+        const element_type = value.tagType();
+
+        if (self.element_type == .end or element_type == .end) {
+            return error.InvalidListType;
+        }
+
+        if (element_type != self.element_type) {
+            return error.TypeMismatch;
+        }
+
         try self.items.append(self.allocator, value);
     }
 
     pub fn finish(self: *List) Allocator.Error!types.Tag {
-        const owned = try self.items.toOwnedSlice(self.allocator);
+        const items = try self.items.toOwnedSlice(self.allocator);
         self.items = .empty;
-        return .{ .list = .{ .element_type = self.element_type, .items = owned } };
+
+        return .{
+            .list = .{
+                .element_type = self.element_type,
+                .items = items,
+            },
+        };
     }
 };
 
@@ -63,26 +87,43 @@ pub const Compound = struct {
             self.allocator.free(entry.name);
             entry.value.deinit(self.allocator);
         }
+
         self.entries.deinit(self.allocator);
         self.names.deinit(self.allocator);
         self.* = undefined;
     }
 
-    pub fn add(self: *Compound, name: []const u8, value: types.Tag) (error{ DuplicateName, InvalidTag } || Allocator.Error)!void {
+    pub fn add(
+        self: *Compound,
+        name: []const u8,
+        value: types.Tag,
+    ) (error{ DuplicateName, InvalidTag } || Allocator.Error)!void {
         if (value.tagType() == .end) return error.InvalidTag;
         if (self.names.contains(name)) return error.DuplicateName;
+
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
+
         try self.names.putNoClobber(self.allocator, owned_name, {});
         errdefer _ = self.names.remove(owned_name);
-        try self.entries.append(self.allocator, .{ .name = owned_name, .value = value });
+
+        try self.entries.append(self.allocator, .{
+            .name = owned_name,
+            .value = value,
+        });
     }
 
     pub fn finish(self: *Compound) Allocator.Error!types.Tag {
-        const owned = try self.entries.toOwnedSlice(self.allocator);
+        const entries = try self.entries.toOwnedSlice(self.allocator);
+
         self.names.deinit(self.allocator);
         self.names = .empty;
         self.entries = .empty;
-        return .{ .compound = .{ .entries = owned } };
+
+        return .{
+            .compound = .{
+                .entries = entries,
+            },
+        };
     }
 };

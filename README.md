@@ -1,6 +1,9 @@
 # nbt.zig
 
 A production-oriented Named Binary Tag codec for Zig 0.16. It supports the three dialects implemented by the original CsNbt library:
+<p align="center">
+    Join our <a href="https://discord.gg/Yv9qPRQNc3">Discord</a>!
+</p>
 
 | Preset | Byte order | Integers and lengths | Strings |
 |---|---|---|---|

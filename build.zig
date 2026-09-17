@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
     const bench = b.addExecutable(.{
         .name = "nbt-bench",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/benchmark.zig"),
+            .root_source_file = b.path("tests/bench/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{.{ .name = "nbt", .module = bench_nbt }},

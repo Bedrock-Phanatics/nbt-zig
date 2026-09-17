@@ -1,13 +1,12 @@
 const std = @import("std");
-
-const types = @import("types.zig");
-const options_mod = @import("options.zig");
-const bounded_buffer = @import("internal/bounded_buffer.zig");
-
 const Allocator = std.mem.Allocator;
+
+const bounded_buffer = @import("internal/bounded_buffer.zig");
+const options_mod = @import("options.zig");
+const Options = options_mod.Options;
+const types = @import("types.zig");
 const Tag = types.Tag;
 const TagType = types.TagType;
-const Options = options_mod.Options;
 
 pub const Error = error{
     UnexpectedEndOfInput,
@@ -42,9 +41,7 @@ const Decoder = struct {
             amount,
         ) catch return error.SizeLimitExceeded;
 
-        if (self.allocated > self.options.max_total_decoded_bytes) {
-            return error.SizeLimitExceeded;
-        }
+        if (self.allocated > self.options.max_total_decoded_bytes) return error.SizeLimitExceeded;
     }
 
     fn take(self: *Decoder, len: usize) DecodeError![]const u8 {
@@ -83,9 +80,7 @@ const Decoder = struct {
         while (shift < 35) : (shift += 7) {
             const current = try self.byte();
 
-            if (shift == 28 and current & 0xf0 != 0) {
-                return error.VarIntOverflow;
-            }
+            if (shift == 28 and current & 0xf0 != 0) return error.VarIntOverflow;
 
             value |= @as(u32, current & 0x7f) << @intCast(shift);
 
@@ -102,9 +97,7 @@ const Decoder = struct {
         while (shift < 70) : (shift += 7) {
             const current = try self.byte();
 
-            if (shift == 63 and current & 0xfe != 0) {
-                return error.VarIntOverflow;
-            }
+            if (shift == 63 and current & 0xfe != 0) return error.VarIntOverflow;
 
             value |= @as(u64, current & 0x7f) << @intCast(shift);
 
@@ -115,9 +108,7 @@ const Decoder = struct {
     }
 
     fn int(self: *Decoder, comptime T: type) DecodeError!T {
-        if (self.options.encoding != .bedrock_network) {
-            return self.intFixed(T);
-        }
+        if (self.options.encoding != .bedrock_network) return self.intFixed(T);
 
         return switch (T) {
             i32 => blk: {
@@ -144,9 +135,7 @@ const Decoder = struct {
 
         const len: usize = @intCast(value);
 
-        if (len > self.options.max_collection_length) {
-            return error.SizeLimitExceeded;
-        }
+        if (len > self.options.max_collection_length) return error.SizeLimitExceeded;
 
         return len;
     }
@@ -162,20 +151,14 @@ const Decoder = struct {
         else
             @intCast(@as(u16, @bitCast(try self.intFixed(i16))));
 
-        if (len > self.options.max_string_bytes) {
-            return error.SizeLimitExceeded;
-        }
+        if (len > self.options.max_string_bytes) return error.SizeLimitExceeded;
 
         const encoded = try self.take(len);
         try self.reserve(len);
 
-        if (self.options.encoding == .java) {
-            return decodeModifiedUtf8(self.allocator, encoded);
-        }
+        if (self.options.encoding == .java) return decodeModifiedUtf8(self.allocator, encoded);
 
-        if (!std.unicode.utf8ValidateSlice(encoded)) {
-            return error.InvalidUtf8;
-        }
+        if (!std.unicode.utf8ValidateSlice(encoded)) return error.InvalidUtf8;
 
         return self.allocator.dupe(u8, encoded);
     }
@@ -185,9 +168,7 @@ const Decoder = struct {
         tag_type: TagType,
         depth: usize,
     ) DecodeError!Tag {
-        if (depth >= self.options.max_depth) {
-            return error.DepthLimitExceeded;
-        }
+        if (depth >= self.options.max_depth) return error.DepthLimitExceeded;
 
         return switch (tag_type) {
             .end => error.InvalidTag,
@@ -224,18 +205,14 @@ const Decoder = struct {
 
         try self.reserve(bytes);
 
-        if (self.offset > self.data.len) {
-            return error.UnexpectedEndOfInput;
-        }
+        if (self.offset > self.data.len) return error.UnexpectedEndOfInput;
 
         const min_input_bytes = if (self.options.encoding == .bedrock_network)
             len
         else
             bytes;
 
-        if (min_input_bytes > self.data.len - self.offset) {
-            return error.UnexpectedEndOfInput;
-        }
+        if (min_input_bytes > self.data.len - self.offset) return error.UnexpectedEndOfInput;
 
         const result = try self.allocator.alloc(T, len);
         errdefer self.allocator.free(result);
@@ -269,9 +246,7 @@ const Decoder = struct {
         const element_type = try self.tagType();
         const len = try self.length();
 
-        if (element_type == .end and len != 0) {
-            return error.InvalidListType;
-        }
+        if (element_type == .end and len != 0) return error.InvalidListType;
 
         const bytes = std.math.mul(
             usize,
@@ -281,9 +256,7 @@ const Decoder = struct {
 
         try self.reserve(bytes);
 
-        if (self.offset > self.data.len) {
-            return error.UnexpectedEndOfInput;
-        }
+        if (self.offset > self.data.len) return error.UnexpectedEndOfInput;
 
         if (element_type != .end and len > 0) {
             const min_elem_bytes = self.minElementSize(element_type);
@@ -293,9 +266,7 @@ const Decoder = struct {
                 min_elem_bytes,
             ) catch return error.SizeLimitExceeded;
 
-            if (min_input_bytes > self.data.len - self.offset) {
-                return error.UnexpectedEndOfInput;
-            }
+            if (min_input_bytes > self.data.len - self.offset) return error.UnexpectedEndOfInput;
         }
 
         const items = try self.allocator.alloc(Tag, len);
@@ -340,11 +311,11 @@ const Decoder = struct {
             const child_type = try self.tagType();
             if (child_type == .end) break;
 
-            if (entries.items.len >= self.options.max_compound_entries or
-                entries.items.len >= self.options.max_collection_length)
-            {
-                return error.SizeLimitExceeded;
-            }
+            const too_many_entries =
+                entries.items.len >= self.options.max_compound_entries or
+                entries.items.len >= self.options.max_collection_length;
+
+            if (too_many_entries) return error.SizeLimitExceeded;
 
             try self.reserve(@sizeOf(types.Entry) * 4);
 
@@ -353,9 +324,7 @@ const Decoder = struct {
 
             const name_entry = try names.getOrPut(self.allocator, name);
 
-            if (name_entry.found_existing) {
-                return error.DuplicateName;
-            }
+            if (name_entry.found_existing) return error.DuplicateName;
 
             name_entry.value_ptr.* = {};
 
@@ -398,9 +367,11 @@ pub fn decode(
     var root = try decoder.payload(root_type, 0);
     errdefer root.deinit(allocator);
 
-    if (options.reject_trailing_bytes and decoder.offset != data.len) {
-        return error.TrailingData;
-    }
+    const has_trailing_data =
+        options.reject_trailing_bytes and
+        decoder.offset != data.len;
+
+    if (has_trailing_data) return error.TrailingData;
 
     return .{
         .name = name,
@@ -430,52 +401,38 @@ fn decodeModifiedUtf8(
             if (first == 0) return error.InvalidModifiedUtf8;
             unit = first;
         } else if (first & 0xe0 == 0xc0) {
-            if (index >= encoded.len) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (index >= encoded.len) return error.InvalidModifiedUtf8;
 
             const second = encoded[index];
             index += 1;
 
-            if (second & 0xc0 != 0x80) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (second & 0xc0 != 0x80) return error.InvalidModifiedUtf8;
 
             unit = (@as(u16, first & 0x1f) << 6) |
                 (second & 0x3f);
 
-            if (unit != 0 and unit < 0x80) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (unit != 0 and unit < 0x80) return error.InvalidModifiedUtf8;
         } else if (first & 0xf0 == 0xe0) {
-            if (index + 1 >= encoded.len) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (index + 1 >= encoded.len) return error.InvalidModifiedUtf8;
 
             const second = encoded[index];
             const third = encoded[index + 1];
             index += 2;
 
-            if (second & 0xc0 != 0x80 or third & 0xc0 != 0x80) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (second & 0xc0 != 0x80 or third & 0xc0 != 0x80) return error.InvalidModifiedUtf8;
 
             unit =
                 (@as(u16, first & 0x0f) << 12) |
                 (@as(u16, second & 0x3f) << 6) |
                 (third & 0x3f);
 
-            if (unit < 0x800) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (unit < 0x800) return error.InvalidModifiedUtf8;
         } else {
             return error.InvalidModifiedUtf8;
         }
 
         if (pending_high) |high| {
-            if (unit < 0xdc00 or unit > 0xdfff) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (unit < 0xdc00 or unit > 0xdfff) return error.InvalidModifiedUtf8;
 
             const scalar: u21 = @intCast(
                 0x10000 +
@@ -494,9 +451,7 @@ fn decodeModifiedUtf8(
         } else if (unit >= 0xd800 and unit <= 0xdbff) {
             pending_high = unit;
         } else {
-            if (unit >= 0xdc00 and unit <= 0xdfff) {
-                return error.InvalidModifiedUtf8;
-            }
+            if (unit >= 0xdc00 and unit <= 0xdfff) return error.InvalidModifiedUtf8;
 
             var buffer: [3]u8 = undefined;
             const len = std.unicode.utf8Encode(
@@ -583,9 +538,7 @@ const Encoder = struct {
         comptime T: type,
         value: T,
     ) (Error || Allocator.Error)!void {
-        if (self.options.encoding != .bedrock_network) {
-            return self.intFixed(T, value);
-        }
+        if (self.options.encoding != .bedrock_network) return self.intFixed(T, value);
 
         switch (T) {
             i32 => {
@@ -616,11 +569,11 @@ const Encoder = struct {
         self: *Encoder,
         value: usize,
     ) (Error || Allocator.Error)!void {
-        if (value > self.options.max_collection_length or
-            value > std.math.maxInt(i32))
-        {
-            return error.SizeLimitExceeded;
-        }
+        const invalid_length =
+            value > self.options.max_collection_length or
+            value > std.math.maxInt(i32);
+
+        if (invalid_length) return error.SizeLimitExceeded;
 
         try self.int(i32, @intCast(value));
     }
@@ -629,28 +582,18 @@ const Encoder = struct {
         self: *Encoder,
         value: []const u8,
     ) (Error || Allocator.Error)!void {
-        if (!std.unicode.utf8ValidateSlice(value)) {
-            return error.InvalidUtf8;
-        }
+        if (!std.unicode.utf8ValidateSlice(value)) return error.InvalidUtf8;
 
-        if (self.options.encoding == .java) {
-            return self.modifiedString(value);
-        }
+        if (self.options.encoding == .java) return self.modifiedString(value);
 
-        if (value.len > self.options.max_string_bytes) {
-            return error.SizeLimitExceeded;
-        }
+        if (value.len > self.options.max_string_bytes) return error.SizeLimitExceeded;
 
         if (self.options.encoding == .bedrock_network) {
-            if (value.len > std.math.maxInt(u32)) {
-                return error.SizeLimitExceeded;
-            }
+            if (value.len > std.math.maxInt(u32)) return error.SizeLimitExceeded;
 
             try self.varUInt(u32, @intCast(value.len));
         } else {
-            if (value.len > std.math.maxInt(u16)) {
-                return error.SizeLimitExceeded;
-            }
+            if (value.len > std.math.maxInt(u16)) return error.SizeLimitExceeded;
 
             try self.intFixed(
                 i16,
@@ -688,11 +631,11 @@ const Encoder = struct {
                 width,
             ) catch return error.SizeLimitExceeded;
 
-            if (encoded_len > self.options.max_string_bytes or
-                encoded_len > std.math.maxInt(u16))
-            {
-                return error.SizeLimitExceeded;
-            }
+            const too_long =
+                encoded_len > self.options.max_string_bytes or
+                encoded_len > std.math.maxInt(u16);
+
+            if (too_long) return error.SizeLimitExceeded;
         }
 
         try self.intFixed(
@@ -740,9 +683,7 @@ const Encoder = struct {
         tag: Tag,
         depth: usize,
     ) (Error || Allocator.Error)!void {
-        if (depth >= self.options.max_depth) {
-            return error.DepthLimitExceeded;
-        }
+        if (depth >= self.options.max_depth) return error.DepthLimitExceeded;
 
         switch (tag) {
             .end => return error.InvalidTag,
@@ -777,28 +718,24 @@ const Encoder = struct {
             },
 
             .list => |value| {
-                if (value.element_type == .end and value.items.len != 0) {
-                    return error.InvalidListType;
-                }
+                if (value.element_type == .end and value.items.len != 0) return error.InvalidListType;
 
                 try self.byte(@intFromEnum(value.element_type));
                 try self.length(value.items.len);
 
                 for (value.items) |item| {
-                    if (item.tagType() != value.element_type) {
-                        return error.TypeMismatch;
-                    }
+                    if (item.tagType() != value.element_type) return error.TypeMismatch;
 
                     try self.payload(item, depth + 1);
                 }
             },
 
             .compound => |value| {
-                if (value.entries.len > self.options.max_compound_entries or
-                    value.entries.len > self.options.max_collection_length)
-                {
-                    return error.SizeLimitExceeded;
-                }
+                const too_many_entries =
+                    value.entries.len > self.options.max_compound_entries or
+                    value.entries.len > self.options.max_collection_length;
+
+                if (too_many_entries) return error.SizeLimitExceeded;
 
                 const index_budget = std.math.mul(
                     usize,
@@ -806,9 +743,7 @@ const Encoder = struct {
                     @sizeOf(types.Entry) * 2,
                 ) catch return error.SizeLimitExceeded;
 
-                if (index_budget > self.options.max_total_decoded_bytes) {
-                    return error.SizeLimitExceeded;
-                }
+                if (index_budget > self.options.max_total_decoded_bytes) return error.SizeLimitExceeded;
 
                 var names: std.StringHashMapUnmanaged(void) = .empty;
                 defer names.deinit(self.allocator);
@@ -819,9 +754,7 @@ const Encoder = struct {
                         entry.name,
                     );
 
-                    if (name_entry.found_existing) {
-                        return error.DuplicateName;
-                    }
+                    if (name_entry.found_existing) return error.DuplicateName;
 
                     name_entry.value_ptr.* = {};
 

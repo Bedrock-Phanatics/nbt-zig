@@ -1,8 +1,7 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const types = @import("types.zig");
-
-const Allocator = std.mem.Allocator;
 
 pub fn string(allocator: Allocator, value: []const u8) Allocator.Error!types.Tag {
     return .{ .string = try allocator.dupe(u8, value) };
@@ -34,9 +33,7 @@ pub const List = struct {
     }
 
     pub fn deinit(self: *List) void {
-        for (self.items.items) |*item| {
-            item.deinit(self.allocator);
-        }
+        for (self.items.items) |*item| item.deinit(self.allocator);
 
         self.items.deinit(self.allocator);
         self.* = undefined;
@@ -48,13 +45,12 @@ pub const List = struct {
     ) (error{ TypeMismatch, InvalidListType } || Allocator.Error)!void {
         const element_type = value.tagType();
 
-        if (self.element_type == .end or element_type == .end) {
-            return error.InvalidListType;
-        }
+        const invalid_type =
+            self.element_type == .end or
+            element_type == .end;
 
-        if (element_type != self.element_type) {
-            return error.TypeMismatch;
-        }
+        if (invalid_type) return error.InvalidListType;
+        if (element_type != self.element_type) return error.TypeMismatch;
 
         try self.items.append(self.allocator, value);
     }

@@ -38,7 +38,6 @@ pub fn compress(
         return allocator.dupe(u8, input);
     }
 
-    // Flate needs at least nine output bytes.
     if (max_output < 9) return error.SizeLimitExceeded;
 
     var output = try BoundedWriter.init(allocator, max_output);
@@ -116,9 +115,11 @@ pub fn decompress(
         error.ReadFailed => return error.MalformedCompressedData,
     }
 
-    if (reject_trailing_bytes and source.bufferedLen() != 0) {
-        return error.TrailingData;
-    }
+    const has_trailing_data =
+        reject_trailing_bytes and
+        source.bufferedLen() != 0;
+
+    if (has_trailing_data) return error.TrailingData;
 
     return output.toOwnedSlice(allocator);
 }

@@ -1,75 +1,66 @@
 const std = @import("std");
 
-const codec = @import("codec.zig");
-const compression = @import("compression.zig");
-const bounded_buffer = @import("internal/bounded_buffer.zig");
-
-pub const TagType = @import("types.zig").TagType;
-pub const Tag = @import("types.zig").Tag;
-pub const List = @import("types.zig").List;
-pub const Entry = @import("types.zig").Entry;
-pub const Compound = @import("types.zig").Compound;
-pub const Document = @import("types.zig").Document;
-
 pub const builder = @import("builder.zig");
-
-pub const Encoding = @import("options.zig").Encoding;
-pub const Compression = @import("options.zig").Compression;
-pub const Options = @import("options.zig").Options;
-
+const codec = @import("codec.zig");
 pub const CodecError = codec.Error;
+const compression = @import("compression.zig");
 pub const CompressionError = compression.Error;
+const bounded_buffer = @import("internal/bounded_buffer.zig");
+const options = @import("options.zig");
+pub const Encoding = options.Encoding;
+pub const Compression = options.Compression;
+pub const Options = options.Options;
+const types = @import("types.zig");
+pub const TagType = types.TagType;
+pub const Tag = types.Tag;
+pub const List = types.List;
+pub const Entry = types.Entry;
+pub const Compound = types.Compound;
+pub const Document = types.Document;
+
 pub const Error = CodecError || CompressionError || std.mem.Allocator.Error;
 
 /// Parses an owned document. Uncompressed slices are read in place.
 pub fn parse(
     allocator: std.mem.Allocator,
     input: []const u8,
-    options: Options,
+    opts: Options,
 ) Error!Document {
-    try options.validate();
+    try opts.validate();
 
-    if (input.len > options.max_input_bytes) {
-        return error.SizeLimitExceeded;
-    }
-
-    if (options.compression == .none) {
-        return codec.decode(allocator, input, options);
-    }
+    if (input.len > opts.max_input_bytes) return error.SizeLimitExceeded;
+    if (opts.compression == .none) return codec.decode(allocator, input, opts);
 
     const plain = try compression.decompress(
         allocator,
         input,
-        options.compression,
-        options.max_decompressed_bytes,
-        options.reject_trailing_bytes,
+        opts.compression,
+        opts.max_decompressed_bytes,
+        opts.reject_trailing_bytes,
     );
     defer allocator.free(plain);
 
-    return codec.decode(allocator, plain, options);
+    return codec.decode(allocator, plain, opts);
 }
 
 /// Serializes a document. The caller owns the returned bytes.
 pub fn serialize(
     allocator: std.mem.Allocator,
     document: Document,
-    options: Options,
+    opts: Options,
 ) Error![]u8 {
-    try options.validate();
+    try opts.validate();
 
-    const plain = try codec.encode(allocator, document, options);
-
-    if (options.compression == .none) {
-        return plain;
-    }
+    const plain = try codec.encode(allocator, document, opts);
+    if (opts.compression == .none) return plain;
 
     defer allocator.free(plain);
 
     return compression.compress(
         allocator,
         plain,
-        options.compression,
-        options.max_output_bytes,
+        opts.compression,
+        opts.max_output_bytes,
     );
 }
 
@@ -77,9 +68,9 @@ pub fn serialize(
 pub fn parseReader(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
-    options: Options,
+    opts: Options,
 ) (Error || std.Io.Reader.Error)!Document {
-    try options.validate();
+    try opts.validate();
 
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(allocator);
@@ -95,7 +86,7 @@ pub fn parseReader(
             &bytes,
             allocator,
             new_len,
-            options.max_input_bytes,
+            opts.max_input_bytes,
         );
 
         bytes.appendSliceAssumeCapacity(chunk);
@@ -105,7 +96,7 @@ pub fn parseReader(
         error.ReadFailed => return error.ReadFailed,
     }
 
-    return parse(allocator, bytes.items, options);
+    return parse(allocator, bytes.items, opts);
 }
 
 /// Writes a serialized document. The caller keeps the writer.
@@ -113,9 +104,9 @@ pub fn writeDocument(
     allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
     document: Document,
-    options: Options,
+    opts: Options,
 ) (Error || std.Io.Writer.Error)!void {
-    const bytes = try serialize(allocator, document, options);
+    const bytes = try serialize(allocator, document, opts);
     defer allocator.free(bytes);
 
     try writer.writeAll(bytes);

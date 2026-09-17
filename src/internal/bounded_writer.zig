@@ -45,9 +45,7 @@ pub const BoundedWriter = struct {
     pub fn toOwnedSlice(
         self: *BoundedWriter,
     ) (bounded_buffer.Error || std.mem.Allocator.Error)![]u8 {
-        if (self.writer.end > self.max_len) {
-            return error.SizeLimitExceeded;
-        }
+        if (self.writer.end > self.max_len) return error.SizeLimitExceeded;
 
         var list: std.ArrayList(u8) = .{
             .items = self.writer.buffer[0..self.writer.end],

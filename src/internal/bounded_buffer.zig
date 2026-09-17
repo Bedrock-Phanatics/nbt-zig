@@ -23,6 +23,7 @@ pub fn nextCapacity(current: usize, needed: usize, limit: usize) Error!usize {
     }
 
     if (capacity < needed) return error.SizeLimitExceeded;
+
     return capacity;
 }
 
@@ -38,9 +39,8 @@ pub fn ensureCapacity(
         limit,
     );
 
-    if (capacity > list.capacity) {
+    if (capacity > list.capacity)
         try list.ensureTotalCapacityPrecise(allocator, capacity);
-    }
 }
 
 test "capacity growth is geometric and bounded" {

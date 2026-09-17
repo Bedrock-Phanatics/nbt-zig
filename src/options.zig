@@ -28,22 +28,24 @@ pub const Options = struct {
     reject_trailing_bytes: bool = false,
 
     pub const java: Options = .{};
+
     pub const bedrock: Options = .{
         .encoding = .bedrock,
     };
+
     pub const bedrock_network: Options = .{
         .encoding = .bedrock_network,
     };
 
     pub fn validate(self: Options) error{InvalidOptions}!void {
-        if (self.max_depth == 0 or
+        const invalid =
+            self.max_depth == 0 or
             self.max_depth > 512 or
             self.max_input_bytes == 0 or
             self.max_decompressed_bytes == 0 or
             self.max_output_bytes == 0 or
-            self.max_total_decoded_bytes == 0)
-        {
-            return error.InvalidOptions;
-        }
+            self.max_total_decoded_bytes == 0;
+
+        if (invalid) return error.InvalidOptions;
     }
 };

@@ -18,11 +18,7 @@ pub const TagType = enum(u8) {
     long_array = 12,
 
     pub fn fromByte(value: u8) error{InvalidTag}!TagType {
-        if (value > @intFromEnum(TagType.long_array)) {
-            return error.InvalidTag;
-        }
-
-        return @enumFromInt(value);
+        return std.enums.fromInt(TagType, value) orelse return error.InvalidTag;
     }
 };
 
@@ -41,9 +37,7 @@ pub const Compound = struct {
 
     pub fn get(self: Compound, name: []const u8) ?*const Tag {
         for (self.entries) |*entry| {
-            if (std.mem.eql(u8, entry.name, name)) {
-                return &entry.value;
-            }
+            if (std.mem.eql(u8, entry.name, name)) return &entry.value;
         }
 
         return null;
@@ -51,9 +45,7 @@ pub const Compound = struct {
 
     pub fn getMut(self: *Compound, name: []const u8) ?*Tag {
         for (self.entries) |*entry| {
-            if (std.mem.eql(u8, entry.name, name)) {
-                return &entry.value;
-            }
+            if (std.mem.eql(u8, entry.name, name)) return &entry.value;
         }
 
         return null;
@@ -88,10 +80,7 @@ pub const Tag = union(TagType) {
             .long_array => |value| allocator.free(value),
 
             .list => |list| {
-                for (list.items) |*item| {
-                    item.deinit(allocator);
-                }
-
+                for (list.items) |*item| item.deinit(allocator);
                 allocator.free(list.items);
             },
 
@@ -120,11 +109,13 @@ pub const Tag = union(TagType) {
             .int => |value| value == b.int,
             .long => |value| value == b.long,
 
-            .float => |value| @as(u32, @bitCast(value)) ==
-                @as(u32, @bitCast(b.float)),
+            .float => |value|
+                @as(u32, @bitCast(value)) ==
+                    @as(u32, @bitCast(b.float)),
 
-            .double => |value| @as(u64, @bitCast(value)) ==
-                @as(u64, @bitCast(b.double)),
+            .double => |value|
+                @as(u64, @bitCast(value)) ==
+                    @as(u64, @bitCast(b.double)),
 
             .byte_array => |value| std.mem.eql(u8, value, b.byte_array),
             .string => |value| std.mem.eql(u8, value, b.string),
@@ -132,11 +123,11 @@ pub const Tag = union(TagType) {
             .long_array => |value| std.mem.eql(i64, value, b.long_array),
 
             .list => |value| blk: {
-                if (value.element_type != b.list.element_type or
-                    value.items.len != b.list.items.len)
-                {
-                    break :blk false;
-                }
+                const incompatible =
+                    value.element_type != b.list.element_type or
+                    value.items.len != b.list.items.len;
+
+                if (incompatible) break :blk false;
 
                 for (value.items, b.list.items) |left, right| {
                     if (!left.eql(right)) break :blk false;
@@ -146,16 +137,14 @@ pub const Tag = union(TagType) {
             },
 
             .compound => |value| blk: {
-                if (value.entries.len != b.compound.entries.len) {
-                    break :blk false;
-                }
+                if (value.entries.len != b.compound.entries.len) break :blk false;
 
                 for (value.entries, b.compound.entries) |left, right| {
-                    if (!std.mem.eql(u8, left.name, right.name) or
-                        !left.value.eql(right.value))
-                    {
-                        break :blk false;
-                    }
+                    const mismatch =
+                        !std.mem.eql(u8, left.name, right.name) or
+                        !left.value.eql(right.value);
+
+                    if (mismatch) break :blk false;
                 }
 
                 break :blk true;

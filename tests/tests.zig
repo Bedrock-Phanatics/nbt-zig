@@ -521,3 +521,81 @@ fn builderAllocationScenario(allocator: std.mem.Allocator) !void {
     var root = try builder.finish();
     defer root.deinit(allocator);
 }
+
+test "TAG_List truncated huge length rejects before large allocation (Java)" {
+    const allocator = std.testing.allocator;
+    const wire = [_]u8{ 9, 0, 0, 1, 0x00, 0x0F, 0x42, 0x40 };
+    try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(allocator, &wire, .java));
+}
+
+test "TAG_List truncated huge length rejects before large allocation (Bedrock)" {
+    const allocator = std.testing.allocator;
+    const wire = [_]u8{ 9, 0, 0, 1, 0x40, 0x42, 0x0F, 0x00 };
+    try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(allocator, &wire, .bedrock));
+}
+
+test "TAG_List truncated huge length rejects before large allocation (Bedrock Network)" {
+    const allocator = std.testing.allocator;
+    // in bedrock_network len = 1_000_000 zigzag encoded is 2_000_000
+    // varint = 0x80, 0x89, 0x7A
+    const wire = [_]u8{ 9, 0, 1, 0x80, 0x89, 0x7A };
+    try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(allocator, &wire, .bedrock_network));
+}
+
+test "TAG_List with TAG_End and non-zero length returns InvalidListType" {
+    const allocator = std.testing.allocator;
+    const wire = [_]u8{ 9, 0, 0, 0, 0, 0, 0, 1 };
+    try std.testing.expectError(error.InvalidListType, nbt.parse(allocator, &wire, .java));
+}
+
+test "TAG_List valid lists decode correctly" {
+    const allocator = std.testing.allocator;
+
+    const empty_end_list = [_]u8{ 9, 0, 0, 0, 0, 0, 0, 0 };
+    var doc1 = try nbt.parse(allocator, &empty_end_list, .java);
+    defer doc1.deinit(allocator);
+    try std.testing.expectEqual(nbt.TagType.end, doc1.root.list.element_type);
+    try std.testing.expectEqual(@as(usize, 0), doc1.root.list.items.len);
+
+    const byte_list = [_]u8{ 9, 0, 0, 1, 0, 0, 0, 2, 42, 43 };
+    var doc2 = try nbt.parse(allocator, &byte_list, .java);
+    defer doc2.deinit(allocator);
+    try std.testing.expectEqual(nbt.TagType.byte, doc2.root.list.element_type);
+    try std.testing.expectEqual(@as(usize, 2), doc2.root.list.items.len);
+    try std.testing.expectEqual(@as(i8, 42), doc2.root.list.items[0].byte);
+    try std.testing.expectEqual(@as(i8, 43), doc2.root.list.items[1].byte);
+}
+
+test "TAG_List boundary: exact minimum input vs one byte less" {
+    const allocator = std.testing.allocator;
+
+    const exact_wire = [_]u8{
+        9, 0, 0, 3,  0, 0, 0, 2,
+        0, 0, 0, 10, 0, 0, 0, 20,
+    };
+    var doc = try nbt.parse(allocator, &exact_wire, .java);
+    defer doc.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), doc.root.list.items.len);
+    try std.testing.expectEqual(@as(i32, 10), doc.root.list.items[0].int);
+    try std.testing.expectEqual(@as(i32, 20), doc.root.list.items[1].int);
+
+    const truncated_by_one = exact_wire[0 .. exact_wire.len - 1];
+    try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(allocator, truncated_by_one, .java));
+}
+
+test "TAG_List multiplication or reserve limit returns SizeLimitExceeded" {
+    const allocator = std.testing.allocator;
+
+    var opts = nbt.Options.java;
+    opts.max_total_decoded_bytes = 100;
+    const wire = [_]u8{ 9, 0, 0, 1, 0, 0, 0, 10 };
+    try std.testing.expectError(error.SizeLimitExceeded, nbt.parse(allocator, &wire, opts));
+}
+
+test "TAG_List proof: truncated input causes zero Tag allocation before error" {
+    var failing_alloc = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const tracking_alloc = failing_alloc.allocator();
+
+    const wire = [_]u8{ 9, 0, 0, 1, 0x00, 0x0F, 0x42, 0x40 };
+    try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(tracking_alloc, &wire, .java));
+}

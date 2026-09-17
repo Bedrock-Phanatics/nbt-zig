@@ -224,6 +224,19 @@ const Decoder = struct {
 
         try self.reserve(bytes);
 
+        if (self.offset > self.data.len) {
+            return error.UnexpectedEndOfInput;
+        }
+
+        const min_input_bytes = if (self.options.encoding == .bedrock_network)
+            len
+        else
+            bytes;
+
+        if (min_input_bytes > self.data.len - self.offset) {
+            return error.UnexpectedEndOfInput;
+        }
+
         const result = try self.allocator.alloc(T, len);
         errdefer self.allocator.free(result);
 
@@ -232,6 +245,24 @@ const Decoder = struct {
         }
 
         return result;
+    }
+
+    fn minElementSize(self: *const Decoder, element_type: TagType) usize {
+        const is_network = self.options.encoding == .bedrock_network;
+
+        return switch (element_type) {
+            .end => 0,
+            .byte => 1,
+            .short => 2,
+            .int => if (is_network) 1 else 4,
+            .long => if (is_network) 1 else 8,
+            .float => 4,
+            .double => 8,
+            .byte_array, .int_array, .long_array => if (is_network) 1 else 4,
+            .string => if (is_network) 1 else 2,
+            .list => if (is_network) 2 else 5,
+            .compound => 1,
+        };
     }
 
     fn list(self: *Decoder, depth: usize) DecodeError!Tag {
@@ -249,6 +280,23 @@ const Decoder = struct {
         ) catch return error.SizeLimitExceeded;
 
         try self.reserve(bytes);
+
+        if (self.offset > self.data.len) {
+            return error.UnexpectedEndOfInput;
+        }
+
+        if (element_type != .end and len > 0) {
+            const min_elem_bytes = self.minElementSize(element_type);
+            const min_input_bytes = std.math.mul(
+                usize,
+                len,
+                min_elem_bytes,
+            ) catch return error.SizeLimitExceeded;
+
+            if (min_input_bytes > self.data.len - self.offset) {
+                return error.UnexpectedEndOfInput;
+            }
+        }
 
         const items = try self.allocator.alloc(Tag, len);
         var initialized: usize = 0;

@@ -109,13 +109,11 @@ pub const Tag = union(TagType) {
             .int => |value| value == b.int,
             .long => |value| value == b.long,
 
-            .float => |value|
-                @as(u32, @bitCast(value)) ==
-                    @as(u32, @bitCast(b.float)),
+            .float => |value| @as(u32, @bitCast(value)) ==
+                @as(u32, @bitCast(b.float)),
 
-            .double => |value|
-                @as(u64, @bitCast(value)) ==
-                    @as(u64, @bitCast(b.double)),
+            .double => |value| @as(u64, @bitCast(value)) ==
+                @as(u64, @bitCast(b.double)),
 
             .byte_array => |value| std.mem.eql(u8, value, b.byte_array),
             .string => |value| std.mem.eql(u8, value, b.string),

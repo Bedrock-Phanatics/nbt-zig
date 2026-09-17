@@ -272,6 +272,135 @@ test "lists of every legal element type and nested containers" {
     try std.testing.expect(end_list.eql(parsed));
 }
 
+fn minimalListElement(allocator: std.mem.Allocator, tag_type: nbt.TagType) !nbt.Tag {
+    return switch (tag_type) {
+        .end => .{ .end = {} },
+        .byte => .{ .byte = 0 },
+        .short => .{ .short = 0 },
+        .int => .{ .int = 0 },
+        .long => .{ .long = 0 },
+        .float => .{ .float = 0 },
+        .double => .{ .double = 0 },
+        .byte_array => try nbt.builder.byteArray(allocator, &.{}),
+        .string => try nbt.builder.string(allocator, ""),
+        .int_array => try nbt.builder.intArray(allocator, &.{}),
+        .long_array => try nbt.builder.longArray(allocator, &.{}),
+        .list => blk: {
+            const items = try allocator.alloc(nbt.Tag, 0);
+            break :blk .{ .list = .{ .element_type = .end, .items = items } };
+        },
+        .compound => .{ .compound = .{
+            .entries = try allocator.alloc(nbt.Entry, 0),
+        } },
+    };
+}
+
+test "minimum-size list elements decode in every encoding" {
+    const allocator = std.testing.allocator;
+
+    inline for (.{
+        nbt.Options.java,
+        nbt.Options.bedrock,
+        nbt.Options.bedrock_network,
+    }) |options| {
+        inline for (.{
+            nbt.TagType.byte,
+            nbt.TagType.short,
+            nbt.TagType.int,
+            nbt.TagType.long,
+            nbt.TagType.float,
+            nbt.TagType.double,
+            nbt.TagType.byte_array,
+            nbt.TagType.string,
+            nbt.TagType.list,
+            nbt.TagType.compound,
+            nbt.TagType.int_array,
+            nbt.TagType.long_array,
+        }) |tag_type| {
+            {
+                const items = try allocator.alloc(nbt.Tag, 1);
+                items[0] = try minimalListElement(allocator, tag_type);
+
+                var document = try nbt.Document.init(
+                    allocator,
+                    "",
+                    .{ .list = .{
+                        .element_type = tag_type,
+                        .items = items,
+                    } },
+                );
+                defer document.deinit(allocator);
+
+                const bytes = try nbt.serialize(allocator, document, options);
+                defer allocator.free(bytes);
+
+                var parsed = try nbt.parse(allocator, bytes, options);
+                defer parsed.deinit(allocator);
+
+                try std.testing.expect(document.eql(parsed));
+            }
+        }
+
+        {
+            const items = try allocator.alloc(nbt.Tag, 0);
+            var document = try nbt.Document.init(
+                allocator,
+                "",
+                .{ .list = .{
+                    .element_type = .end,
+                    .items = items,
+                } },
+            );
+            defer document.deinit(allocator);
+
+            const bytes = try nbt.serialize(allocator, document, options);
+            defer allocator.free(bytes);
+
+            var parsed = try nbt.parse(allocator, bytes, options);
+            defer parsed.deinit(allocator);
+
+            try std.testing.expect(document.eql(parsed));
+        }
+    }
+}
+
+test "number arrays reject impossible payloads before allocation" {
+    const allocator = std.testing.allocator;
+
+    const java_int_array = [_]u8{ 11, 0, 0, 0x00, 0x0F, 0x42, 0x40 };
+    const java_long_array = [_]u8{ 12, 0, 0, 0x00, 0x0F, 0x42, 0x40 };
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        nbt.parse(allocator, &java_int_array, .java),
+    );
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        nbt.parse(allocator, &java_long_array, .java),
+    );
+
+    const bedrock_int_array = [_]u8{ 11, 0, 0, 0x40, 0x42, 0x0F, 0x00 };
+    const bedrock_long_array = [_]u8{ 12, 0, 0, 0x40, 0x42, 0x0F, 0x00 };
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        nbt.parse(allocator, &bedrock_int_array, .bedrock),
+    );
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        nbt.parse(allocator, &bedrock_long_array, .bedrock),
+    );
+
+    const network_int_array = [_]u8{ 11, 0, 0x80, 0x89, 0x7A };
+    const network_long_array = [_]u8{ 12, 0, 0x80, 0x89, 0x7A };
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        nbt.parse(allocator, &network_int_array, .bedrock_network),
+    );
+    try std.testing.expectError(
+        error.UnexpectedEndOfInput,
+        nbt.parse(allocator, &network_long_array, .bedrock_network),
+    );
+}
+
 test "malformed compression and decompression limits" {
     const allocator = std.testing.allocator;
     var gzip_options: nbt.Options = .java;

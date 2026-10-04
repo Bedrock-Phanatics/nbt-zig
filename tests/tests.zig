@@ -435,6 +435,12 @@ test "input output option validation and strict modified UTF-8" {
 
     var document = try nbt.Document.init(allocator, "", .{ .byte = 0 });
     defer document.deinit(allocator);
+    var invalid_utf8 = [_]u8{0xff};
+    const invalid_document: nbt.Document = .{
+        .name = document.name,
+        .root = .{ .string = &invalid_utf8 },
+    };
+    try std.testing.expectError(error.InvalidUtf8, nbt.serialize(allocator, invalid_document, .java));
     var output_limited: nbt.Options = .java;
     output_limited.max_output_bytes = minimal.len - 1;
     try std.testing.expectError(error.SizeLimitExceeded, nbt.serialize(allocator, document, output_limited));

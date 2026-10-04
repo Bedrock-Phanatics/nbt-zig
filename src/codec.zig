@@ -141,9 +141,7 @@ const Decoder = struct {
     }
 
     fn string(self: *Decoder) DecodeError![]u8 {
-        const len: usize = if (self.options.encoding == .java)
-            @intCast(@as(u16, @bitCast(try self.intFixed(i16))))
-        else if (self.options.encoding == .bedrock_network)
+        const len: usize = if (self.options.encoding == .bedrock_network)
             std.math.cast(
                 usize,
                 try self.varUInt32(),
@@ -608,8 +606,7 @@ const Encoder = struct {
         self: *Encoder,
         value: []const u8,
     ) (Error || Allocator.Error)!void {
-        var view = std.unicode.Utf8View.init(value) catch
-            return error.InvalidUtf8;
+        const view = std.unicode.Utf8View.initUnchecked(value);
         var iterator = view.iterator();
 
         var encoded_len: usize = 0;
@@ -643,7 +640,6 @@ const Encoder = struct {
             @bitCast(@as(u16, @intCast(encoded_len))),
         );
 
-        view = std.unicode.Utf8View.initUnchecked(value);
         iterator = view.iterator();
 
         while (iterator.nextCodepoint()) |codepoint| {
@@ -720,7 +716,7 @@ const Encoder = struct {
             .list => |value| {
                 if (value.element_type == .end and value.items.len != 0) return error.InvalidListType;
 
-                try self.byte(@intFromEnum(value.element_type));
+                try self.byte(@backingInt(value.element_type));
                 try self.length(value.items.len);
 
                 for (value.items) |item| {
@@ -761,12 +757,12 @@ const Encoder = struct {
                     const tag_type = entry.value.tagType();
                     if (tag_type == .end) return error.InvalidTag;
 
-                    try self.byte(@intFromEnum(tag_type));
+                    try self.byte(@backingInt(tag_type));
                     try self.string(entry.name);
                     try self.payload(entry.value, depth + 1);
                 }
 
-                try self.byte(@intFromEnum(TagType.end));
+                try self.byte(@backingInt(TagType.end));
             },
         }
     }
@@ -788,7 +784,7 @@ pub fn encode(
     };
     errdefer encoder.deinit();
 
-    try encoder.byte(@intFromEnum(root_type));
+    try encoder.byte(@backingInt(root_type));
     try encoder.string(document.name);
     try encoder.payload(document.root, 0);
 

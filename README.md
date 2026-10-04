@@ -1,6 +1,6 @@
 # nbt-zig
 
-High-performance [Named Binary Tag](https://minecraft.wiki/w/NBT_format) codec for Zig 0.16, with first-class support for Minecraft Java and Bedrock formats.
+High-performance [Named Binary Tag](https://minecraft.wiki/w/NBT_format) codec for Zig 0.17, with first-class support for Minecraft Java and Bedrock formats.
 
 <p align="center">
   <a href="https://discord.gg/Yv9qPRQNc3">Join the Bedrock Phanatics Discord</a>
@@ -10,7 +10,7 @@ High-performance [Named Binary Tag](https://minecraft.wiki/w/NBT_format) codec f
 * GZip and ZLib compression
 * Explicit allocator ownership
 * Configurable decode limits for untrusted input
-* Streaming reader/writer APIs
+* Reader/writer adapters
 * Tested, fuzzed, and benchmarked in CI
 
 ## Usage
@@ -42,8 +42,8 @@ fn load(allocator: std.mem.Allocator, data: []const u8) !void {
 | --------------------- | ------------------------------------------------------ |
 | `nbt.parse()`         | Decode NBT into an owned `Document`                    |
 | `nbt.serialize()`     | Encode a `Document`                                    |
-| `nbt.parseReader()`   | Decode from `std.Io.Reader`                            |
-| `nbt.writeDocument()` | Encode to `std.Io.Writer`                              |
+| `nbt.parseReader()`   | Buffer a `std.Io.Reader`, then decode                   |
+| `nbt.writeDocument()` | Encode, then write to `std.Io.Writer`                   |
 | `nbt.builder`         | Safely construct compounds, lists, strings, and arrays |
 
 Encoding presets:

@@ -50,6 +50,7 @@ pub const BoundedWriter = struct {
         var list: std.ArrayList(u8) = .{
             .items = self.writer.buffer[0..self.writer.end],
             .capacity = self.writer.buffer.len,
+            .pointer_stability = .{},
         };
 
         errdefer {

@@ -13,7 +13,7 @@ const Case = struct {
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
-    std.debug.print("nbt benchmark (Zig 0.16, ReleaseFast; median of {d} samples)\n", .{sample_count});
+    std.debug.print("nbt benchmark (Zig 0.17, ReleaseFast; median of {d} samples)\n", .{sample_count});
     inline for ([_]Case{
         .{ .name = "java-byte-array", .shape = .byte_array, .payload_size = 64 * 1024, .iterations = 200, .options = .java },
         .{ .name = "java-structured-mutf8", .shape = .structured, .payload_size = 128, .iterations = 2_000, .options = .java },

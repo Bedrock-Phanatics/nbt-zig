@@ -99,13 +99,15 @@ pub fn parseReader(
     return parse(allocator, bytes.items, opts);
 }
 
-/// Writes a serialized document. The caller keeps the writer.
+/// Streams uncompressed NBT; compressed output is buffered. Does not flush.
+/// Errors may leave partial output. The caller keeps the writer.
 pub fn writeDocument(
     allocator: std.mem.Allocator,
     writer: *std.Io.Writer,
     document: Document,
     opts: Options,
 ) (Error || std.Io.Writer.Error)!void {
+    if (opts.compression == .none) return codec.encodeWriter(allocator, writer, document, opts);
     const bytes = try serialize(allocator, document, opts);
     defer allocator.free(bytes);
 

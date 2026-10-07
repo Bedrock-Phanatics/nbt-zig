@@ -734,3 +734,225 @@ test "TAG_List proof: truncated input causes zero Tag allocation before error" {
     const wire = [_]u8{ 9, 0, 0, 1, 0x00, 0x0F, 0x42, 0x40 };
     try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(tracking_alloc, &wire, .java));
 }
+
+test "compression rejects corrupted checksums and gzip sizes" {
+    const allocator = std.testing.allocator;
+    var document = try nbt.Document.init(allocator, "", .{ .byte = 7 });
+    defer document.deinit(allocator);
+    inline for (.{ nbt.Compression.gzip, nbt.Compression.zlib }) |kind| {
+        const options: nbt.Options = .{ .compression = kind };
+        const bytes = try nbt.serialize(allocator, document, options);
+        defer allocator.free(bytes);
+        const footer_len: usize = if (kind == .gzip) 8 else 4;
+        for (bytes.len - footer_len..bytes.len) |index| {
+            bytes[index] ^= 1;
+            defer bytes[index] ^= 1;
+            try std.testing.expectError(error.MalformedCompressedData, nbt.parse(allocator, bytes, options));
+        }
+    }
+}
+
+test "compression validates headers including optional gzip fields" {
+    const allocator = std.testing.allocator;
+    var document = try nbt.Document.init(allocator, "", .{ .byte = 7 });
+    defer document.deinit(allocator);
+    const gzip_options: nbt.Options = .{ .compression = .gzip };
+    const gzip = try nbt.serialize(allocator, document, gzip_options);
+    defer allocator.free(gzip);
+    gzip[3] = 0x20;
+    try std.testing.expectError(error.MalformedCompressedData, nbt.parse(allocator, gzip, gzip_options));
+    gzip[3] = 0x1e;
+    const header = try std.mem.concat(allocator, u8, &.{ gzip[0..10], &.{ 3, 0, 'a', 'b', 'c', 'n', 0, 'c', 0 } });
+    defer allocator.free(header);
+    var crc: [2]u8 = undefined;
+    std.mem.writeInt(u16, &crc, @truncate(std.hash.Crc32.hash(header)), .little);
+    const optional = try std.mem.concat(allocator, u8, &.{ header, &crc, gzip[10..] });
+    defer allocator.free(optional);
+    var parsed = try nbt.parse(allocator, optional, gzip_options);
+    defer parsed.deinit(allocator);
+    try std.testing.expect(document.eql(parsed));
+    optional[header.len] ^= 1;
+    try std.testing.expectError(error.MalformedCompressedData, nbt.parse(allocator, optional, gzip_options));
+
+    const zlib_options: nbt.Options = .{ .compression = .zlib };
+    const zlib = try nbt.serialize(allocator, document, zlib_options);
+    defer allocator.free(zlib);
+    zlib[1] ^= 1;
+    try std.testing.expectError(error.MalformedCompressedData, nbt.parse(allocator, zlib, zlib_options));
+    zlib[0] = 0x78;
+    zlib[1] = 0x20; // Valid FCHECK with an unsupported preset dictionary.
+    try std.testing.expectError(error.MalformedCompressedData, nbt.parse(allocator, zlib, zlib_options));
+}
+
+test "uncompressed writer needs no temporary allocation and respects limits" {
+    const allocator = std.testing.allocator;
+    var document = try nbt.Document.init(allocator, "", try nbt.builder.byteArray(allocator, &.{ 1, 2, 3 }));
+    defer document.deinit(allocator);
+    var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+    inline for (.{ nbt.Options.java, nbt.Options.bedrock, nbt.Options.bedrock_network }) |options| {
+        const expected = try nbt.serialize(allocator, document, options);
+        defer allocator.free(expected);
+        var buffer: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buffer);
+        try nbt.writeDocument(failing.allocator(), &writer, document, options);
+        try std.testing.expectEqualSlices(u8, expected, writer.buffered());
+        var limited = options;
+        limited.max_output_bytes = expected.len - 1;
+        writer = .fixed(&buffer);
+        try std.testing.expectError(error.SizeLimitExceeded, nbt.writeDocument(failing.allocator(), &writer, document, limited));
+        try std.testing.expect(writer.end <= limited.max_output_bytes);
+        writer = .fixed(buffer[0 .. expected.len - 1]);
+        try std.testing.expectError(error.WriteFailed, nbt.writeDocument(failing.allocator(), &writer, document, options));
+    }
+}
+
+test "parse serialize and write roll back every allocation failure" {
+    const allocator = std.testing.allocator;
+    var document = try ownedDocument(allocator);
+    defer document.deinit(allocator);
+    inline for (.{ nbt.Encoding.java, nbt.Encoding.bedrock, nbt.Encoding.bedrock_network }) |encoding| {
+        inline for (.{ nbt.Compression.none, nbt.Compression.gzip, nbt.Compression.zlib }) |kind| {
+            const options: nbt.Options = .{ .encoding = encoding, .compression = kind };
+            const bytes = try nbt.serialize(allocator, document, options);
+            defer allocator.free(bytes);
+            // Force reallocations to allocate so failure counts are deterministic.
+            var backing = std.testing.FailingAllocator.init(allocator, .{ .resize_fail_index = 0 });
+            try std.testing.checkAllAllocationFailures(backing.allocator(), codecAllocationScenario, .{ bytes, options });
+        }
+    }
+}
+
+fn codecAllocationScenario(allocator: std.mem.Allocator, bytes: []const u8, options: nbt.Options) !void {
+    var parsed = try nbt.parse(allocator, bytes, options);
+    defer parsed.deinit(allocator);
+    const encoded = try nbt.serialize(allocator, parsed, options);
+    defer allocator.free(encoded);
+    var buffer: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try nbt.writeDocument(allocator, &writer, parsed, options);
+    try std.testing.expectEqualSlices(u8, encoded, writer.buffered());
+}
+
+test "list and document builders retain ownership on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, listAllocationScenario, .{});
+}
+
+fn listAllocationScenario(allocator: std.mem.Allocator) !void {
+    var list = nbt.builder.List.init(allocator, .string);
+    defer list.deinit();
+    var value = try nbt.builder.string(allocator, "owned");
+    var value_owned = true;
+    defer if (value_owned) value.deinit(allocator);
+    try list.append(value);
+    value_owned = false;
+    var root = try list.finish();
+    var root_owned = true;
+    defer if (root_owned) root.deinit(allocator);
+    var document = try nbt.Document.init(allocator, "list", root);
+    root_owned = false;
+    defer document.deinit(allocator);
+}
+
+test "maximum supported depth parses serializes and frees safely" {
+    const allocator = std.testing.allocator;
+    var wire: std.ArrayList(u8) = .empty;
+    defer wire.deinit(allocator);
+    for (0..512) |_| try wire.appendSlice(allocator, &.{ 10, 0, 0 });
+    try wire.appendNTimes(allocator, 0, 512);
+    var parsed = try nbt.parse(allocator, wire.items, .java);
+    defer parsed.deinit(allocator);
+    const encoded = try nbt.serialize(allocator, parsed, .java);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, wire.items, encoded);
+    var shallow: nbt.Options = .java;
+    shallow.max_depth = 511;
+    try std.testing.expectError(error.DepthLimitExceeded, nbt.parse(allocator, wire.items, shallow));
+    try std.testing.expectError(error.DepthLimitExceeded, nbt.serialize(allocator, parsed, shallow));
+    try wire.insertSlice(allocator, 0, &.{ 10, 0, 0 });
+    try wire.append(allocator, 0);
+    try std.testing.expectError(error.DepthLimitExceeded, nbt.parse(allocator, wire.items, .java));
+}
+
+test "string wire limits and parsed ownership are independent of input" {
+    const allocator = std.testing.allocator;
+    const text = try allocator.alloc(u8, 65536);
+    defer allocator.free(text);
+    @memset(text, 'a');
+    var document = try nbt.Document.init(allocator, "", try nbt.builder.string(allocator, text[0..65535]));
+    defer document.deinit(allocator);
+    inline for (.{ nbt.Options.java, nbt.Options.bedrock, nbt.Options.bedrock_network }) |options| {
+        const bytes = try nbt.serialize(allocator, document, options);
+        defer allocator.free(bytes);
+        var parsed = try nbt.parse(allocator, bytes, options);
+        defer parsed.deinit(allocator);
+        @memset(bytes, 0);
+        try std.testing.expectEqualStrings(document.root.string, parsed.root.string);
+    }
+    var oversized = try nbt.Document.init(allocator, "", try nbt.builder.string(allocator, text));
+    defer oversized.deinit(allocator);
+    try std.testing.expectError(error.SizeLimitExceeded, nbt.serialize(allocator, oversized, .java));
+    try std.testing.expectError(error.SizeLimitExceeded, nbt.serialize(allocator, oversized, .bedrock));
+    const network = try nbt.serialize(allocator, oversized, .bedrock_network);
+    defer allocator.free(network);
+    var limited: nbt.Options = .bedrock_network;
+    limited.max_string_bytes = text.len - 1;
+    try std.testing.expectError(error.SizeLimitExceeded, nbt.parse(allocator, network, limited));
+}
+
+test "network signed extrema have canonical varints and reject overflow" {
+    const allocator = std.testing.allocator;
+    inline for (.{
+        .{ nbt.Tag{ .int = std.math.minInt(i32) }, &[_]u8{ 3, 0, 0xff, 0xff, 0xff, 0xff, 0x0f } },
+        .{ nbt.Tag{ .int = std.math.maxInt(i32) }, &[_]u8{ 3, 0, 0xfe, 0xff, 0xff, 0xff, 0x0f } },
+        .{ nbt.Tag{ .long = std.math.minInt(i64) }, &[_]u8{ 4, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1 } },
+        .{ nbt.Tag{ .long = std.math.maxInt(i64) }, &[_]u8{ 4, 0, 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1 } },
+    }) |case| {
+        var document = try nbt.Document.init(allocator, "", case[0]);
+        defer document.deinit(allocator);
+        const bytes = try nbt.serialize(allocator, document, .bedrock_network);
+        defer allocator.free(bytes);
+        try std.testing.expectEqualSlices(u8, case[1], bytes);
+        var parsed = try nbt.parse(allocator, case[1], .bedrock_network);
+        defer parsed.deinit(allocator);
+        try std.testing.expect(document.eql(parsed));
+    }
+    try std.testing.expectError(error.VarIntOverflow, nbt.parse(allocator, &.{ 4, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2 }, .bedrock_network));
+    try std.testing.expectError(error.InvalidLength, nbt.parse(allocator, &.{ 9, 0, 1, 1 }, .bedrock_network));
+    try std.testing.expectError(error.InvalidTag, nbt.parse(allocator, &.{ 9, 0, 13, 0 }, .bedrock_network));
+}
+
+test "Java ASCII strings allocate only their charged byte length" {
+    var tracking = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var options: nbt.Options = .java;
+    options.max_total_decoded_bytes = 1;
+    var document = try nbt.parse(tracking.allocator(), &.{ 1, 0, 1, 'a', 7 }, options);
+    defer document.deinit(tracking.allocator());
+    try std.testing.expectEqual(@as(usize, 1), tracking.allocations);
+    try std.testing.expectEqual(@as(usize, 1), tracking.allocated_bytes);
+}
+
+test "highly compressible input cannot bypass decompression limits" {
+    const allocator = std.testing.allocator;
+    const payload = try allocator.alloc(u8, 64 * 1024);
+    @memset(payload, 0);
+    var document = try nbt.Document.init(allocator, "", .{ .byte_array = payload });
+    defer document.deinit(allocator);
+    inline for (.{ nbt.Compression.gzip, nbt.Compression.zlib }) |kind| {
+        var options: nbt.Options = .{ .compression = kind };
+        const compressed = try nbt.serialize(allocator, document, options);
+        defer allocator.free(compressed);
+        options.max_input_bytes = compressed.len;
+        options.max_decompressed_bytes = 1024;
+        try std.testing.expect(compressed.len < payload.len / 16);
+        try std.testing.expectError(error.SizeLimitExceeded, nbt.parse(allocator, compressed, options));
+    }
+}
+
+test "nonminimal network varints are accepted and written canonically" {
+    const allocator = std.testing.allocator;
+    var parsed = try nbt.parse(allocator, &.{ 3, 0x80, 0, 0x80, 0 }, .bedrock_network);
+    defer parsed.deinit(allocator);
+    const encoded = try nbt.serialize(allocator, parsed, .bedrock_network);
+    defer allocator.free(encoded);
+    try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0 }, encoded);
+}

@@ -1,6 +1,10 @@
 const std = @import("std");
 const nbt = @import("nbt");
 
+test {
+    _ = @import("interop.zig");
+}
+
 fn ownedDocument(allocator: std.mem.Allocator) !nbt.Document {
     const name = try allocator.dupe(u8, "root");
     errdefer allocator.free(name);

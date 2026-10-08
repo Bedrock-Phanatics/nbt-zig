@@ -1,8 +1,9 @@
 const std = @import("std");
 const nbt = @import("nbt");
+const fixtures = @import("fixtures");
 
 const sample_count = 7;
-const Shape = enum { byte_array, structured, compound };
+const Shape = enum { byte_array, structured, compound, fixture };
 const Case = struct {
     name: []const u8,
     shape: Shape,
@@ -15,9 +16,15 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     std.debug.print("nbt benchmark (Zig 0.17, ReleaseFast; median of {d} samples)\n", .{sample_count});
     inline for ([_]Case{
-        .{ .name = "bedrock-item", .shape = .compound, .payload_size = 4, .iterations = 2_000, .options = .bedrock },
-        .{ .name = "bedrock-entity", .shape = .compound, .payload_size = 64, .iterations = 500, .options = .bedrock },
-        .{ .name = "large-compound", .shape = .compound, .payload_size = 4096, .iterations = 10, .options = .bedrock },
+        .{ .name = "bedrock-item", .shape = .fixture, .payload_size = 0, .iterations = 2_000, .options = .bedrock },
+        .{ .name = "bedrock-entity", .shape = .fixture, .payload_size = 1, .iterations = 500, .options = .bedrock },
+        .{ .name = "bedrock-structure", .shape = .fixture, .payload_size = 2, .iterations = 100, .options = .bedrock },
+        .{ .name = "network-entity", .shape = .fixture, .payload_size = 3, .iterations = 500, .options = .bedrock_network },
+        .{ .name = "java-level", .shape = .fixture, .payload_size = 4, .iterations = 200, .options = .java },
+        .{ .name = "compound-4", .shape = .compound, .payload_size = 4, .iterations = 20_000, .options = .bedrock },
+        .{ .name = "compound-16", .shape = .compound, .payload_size = 16, .iterations = 10_000, .options = .bedrock },
+        .{ .name = "compound-64", .shape = .compound, .payload_size = 64, .iterations = 2_000, .options = .bedrock },
+        .{ .name = "large-compound", .shape = .compound, .payload_size = 4096, .iterations = 100, .options = .bedrock },
         .{ .name = "java-byte-array", .shape = .byte_array, .payload_size = 64 * 1024, .iterations = 200, .options = .java },
         .{ .name = "java-structured-mutf8", .shape = .structured, .payload_size = 128, .iterations = 2_000, .options = .java },
         .{ .name = "bedrock-structured", .shape = .structured, .payload_size = 128, .iterations = 2_000, .options = .bedrock },
@@ -26,6 +33,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "zlib-byte-array", .shape = .byte_array, .payload_size = 64 * 1024, .iterations = 100, .options = .{ .compression = .zlib } },
         .{ .name = "large-byte-array", .shape = .byte_array, .payload_size = 4 * 1024 * 1024, .iterations = 10, .options = .java },
     }) |case| try runCase(allocator, init.io, case);
+    try profileCompression(allocator, init.io);
 }
 
 fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case) !void {
@@ -47,6 +55,7 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case) !void {
     var write_samples: [sample_count]u64 = undefined;
     const buffer = try allocator.alloc(u8, encoded.len);
     defer allocator.free(buffer);
+    _ = try measureWrite(allocator, io, document, case.options, buffer, warmup_iterations);
     for (0..sample_count) |index| {
         decode_samples[index] = try measureDecode(allocator, io, encoded, case.options, case.iterations);
         encode_samples[index] = try measureEncode(allocator, io, document, case.options, case.iterations);
@@ -85,6 +94,10 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case) !void {
 }
 
 fn makeDocument(allocator: std.mem.Allocator, case: Case) !nbt.Document {
+    if (case.shape == .fixture) {
+        const fixture = fixtures.documents[case.payload_size];
+        return nbt.parse(allocator, fixture.bytes, fixture.options);
+    }
     if (case.shape == .compound) {
         var compound = nbt.builder.Compound.init(allocator);
         defer compound.deinit();
@@ -171,6 +184,63 @@ fn measureWrite(
         std.mem.doNotOptimizeAway(writer.end);
     }
     return @intCast(start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds);
+}
+
+fn profileCompression(allocator: std.mem.Allocator, io: std.Io) !void {
+    const plain = try allocator.alloc(u8, 64 * 1024);
+    defer allocator.free(plain);
+    for (plain, 0..) |*byte, index| byte.* = @truncate(index *% 31);
+    var root = try nbt.builder.byteArray(allocator, plain);
+    var document = nbt.Document.init(allocator, "profile", root) catch |err| {
+        root.deinit(allocator);
+        return err;
+    };
+    defer document.deinit(allocator);
+    const logical = try nbt.serialize(allocator, document, .java);
+    defer allocator.free(logical);
+    const workspace = try allocator.create(struct {
+        history: [std.compress.flate.max_window_len]u8,
+        inflater: std.compress.flate.Decompress,
+    });
+    defer allocator.destroy(workspace);
+    inline for (.{ nbt.Compression.gzip, nbt.Compression.zlib }) |kind| {
+        const encoded = try nbt.serialize(allocator, document, .{ .compression = kind });
+        defer allocator.free(encoded);
+        const container: std.compress.flate.Container = if (kind == .gzip) .gzip else .zlib;
+        inline for (.{ false, true }) |checksum| {
+            var samples: [sample_count]u64 = undefined;
+            for (&samples) |*sample| {
+                const start = std.Io.Clock.awake.now(io);
+                for (0..200) |_| {
+                    var source: std.Io.Reader = .fixed(encoded);
+                    workspace.inflater = .init(&source, container, &workspace.history);
+                    var hasher = std.compress.flate.Container.Hasher.init(container);
+                    while (workspace.inflater.reader.peekGreedy(1)) |chunk| {
+                        if (checksum) hasher.update(chunk);
+                        workspace.inflater.reader.toss(chunk.len);
+                    } else |err| if (err != error.EndOfStream) return err;
+                    std.mem.doNotOptimizeAway(hasher);
+                }
+                sample.* = @intCast(start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds);
+            }
+            std.mem.sort(u64, &samples, {}, std.sort.asc(u64));
+            std.debug.print("profile {s} inflate{s}: {d:.2} us/op (reused workspace, no output allocation/copy)\n", .{
+                @tagName(kind), if (checksum) "+checksum" else " only", microsPerOp(samples[sample_count / 2], 200),
+            });
+        }
+        var samples: [sample_count]u64 = undefined;
+        for (&samples) |*sample| {
+            const start = std.Io.Clock.awake.now(io);
+            for (0..200) |_| {
+                var hasher = std.compress.flate.Container.Hasher.init(container);
+                hasher.update(logical);
+                std.mem.doNotOptimizeAway(hasher);
+            }
+            sample.* = @intCast(start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds);
+        }
+        std.mem.sort(u64, &samples, {}, std.sort.asc(u64));
+        std.debug.print("profile {s} checksum only: {d:.2} us/op\n", .{ @tagName(kind), microsPerOp(samples[sample_count / 2], 200) });
+    }
 }
 
 fn throughput(bytes: usize, nanoseconds: u64) f64 {

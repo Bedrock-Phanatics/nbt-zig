@@ -14,7 +14,13 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("tests/tests.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "nbt", .module = nbt }},
+        .imports = &.{
+            .{ .name = "nbt", .module = nbt },
+            .{ .name = "fixtures", .module = b.createModule(.{
+                .root_source_file = b.path("tests/fixtures/root.zig"),
+                .imports = &.{.{ .name = "nbt", .module = nbt }},
+            }) },
+        },
     });
     const tests = b.addTest(.{ .root_module = test_module });
     const run_tests = b.addRunArtifact(tests);
@@ -32,7 +38,13 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/bench/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast,
-            .imports = &.{.{ .name = "nbt", .module = bench_nbt }},
+            .imports = &.{
+                .{ .name = "nbt", .module = bench_nbt },
+                .{ .name = "fixtures", .module = b.createModule(.{
+                    .root_source_file = b.path("tests/fixtures/root.zig"),
+                    .imports = &.{.{ .name = "nbt", .module = bench_nbt }},
+                }) },
+            },
         }),
     });
     test_step.dependOn(&bench.step);
@@ -52,6 +64,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "nbt", .module = nbt },
                 .{ .name = "config", .module = fuzz_options.createModule() },
+                .{ .name = "fixtures", .module = test_module.import_table.get("fixtures").? },
             },
         }),
     });

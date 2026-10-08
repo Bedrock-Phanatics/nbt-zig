@@ -78,10 +78,12 @@ pub const BoundedWriter = struct {
         self: *BoundedWriter,
         needed: usize,
     ) std.Io.Writer.Error!void {
+        // Flate's bit writer requests eight writable bytes but may commit fewer.
+        const capacity_limit = std.math.add(usize, self.max_len, @sizeOf(u64)) catch std.math.maxInt(usize);
         const capacity = bounded_buffer.nextCapacity(
             self.writer.buffer.len,
             needed,
-            self.max_len,
+            capacity_limit,
         ) catch return self.fail(.limit);
 
         if (capacity == self.writer.buffer.len) return;
@@ -128,6 +130,7 @@ pub const BoundedWriter = struct {
             external_len,
         ) catch return self.fail(.limit);
 
+        if (needed > self.max_len) return self.fail(.limit);
         try self.ensureCapacity(needed);
 
         for (data[0 .. data.len - 1]) |bytes| {
@@ -157,6 +160,7 @@ pub const BoundedWriter = struct {
         _ = preserve;
 
         const self: *BoundedWriter = @fieldParentPtr("writer", writer);
+        if (writer.end > self.max_len) return self.fail(.limit);
 
         const needed = std.math.add(
             usize,

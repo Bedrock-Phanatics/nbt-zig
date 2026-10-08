@@ -8,6 +8,8 @@ const types = @import("types.zig");
 const Tag = types.Tag;
 const TagType = types.TagType;
 
+const small_compound_limit = 16;
+
 pub const Error = error{
     UnexpectedEndOfInput,
     InvalidTag,
@@ -215,8 +217,18 @@ const Decoder = struct {
         const result = try self.allocator.alloc(T, len);
         errdefer self.allocator.free(result);
 
-        for (result) |*item| {
-            item.* = try self.int(T);
+        if (self.options.encoding == .bedrock_network) {
+            for (result) |*item| item.* = try self.int(T);
+        } else {
+            const input = try self.take(bytes);
+            const endian: std.builtin.Endian = if (self.options.encoding == .java) .big else .little;
+            if (endian == @import("builtin").cpu.arch.endian()) {
+                @memcpy(std.mem.sliceAsBytes(result), input);
+            } else {
+                for (result, 0..) |*item, index| {
+                    item.* = std.mem.readInt(T, input[index * @sizeOf(T) ..][0..@sizeOf(T)], endian);
+                }
+            }
         }
 
         return result;
@@ -245,6 +257,7 @@ const Decoder = struct {
         const len = try self.length();
 
         if (element_type == .end and len != 0) return error.InvalidListType;
+        if (len != 0 and depth >= self.options.max_depth) return error.DepthLimitExceeded;
 
         const bytes = std.math.mul(
             usize,
@@ -308,6 +321,7 @@ const Decoder = struct {
         while (true) {
             const child_type = try self.tagType();
             if (child_type == .end) break;
+            if (depth >= self.options.max_depth) return error.DepthLimitExceeded;
 
             const too_many_entries =
                 entries.items.len >= self.options.max_compound_entries or
@@ -320,11 +334,20 @@ const Decoder = struct {
             const name = try self.string();
             errdefer self.allocator.free(name);
 
-            const name_entry = try names.getOrPut(self.allocator, name);
-
-            if (name_entry.found_existing) return error.DuplicateName;
-
-            name_entry.value_ptr.* = {};
+            // ponytail: linear scans stop at 16 entries; larger compounds use the index.
+            if (entries.items.len < small_compound_limit) {
+                for (entries.items) |entry| {
+                    if (std.mem.eql(u8, entry.name, name)) return error.DuplicateName;
+                }
+            } else {
+                if (entries.items.len == small_compound_limit) {
+                    try names.ensureTotalCapacity(self.allocator, small_compound_limit + 1);
+                    for (entries.items) |entry| names.putAssumeCapacityNoClobber(entry.name, {});
+                }
+                const name_entry = try names.getOrPut(self.allocator, name);
+                if (name_entry.found_existing) return error.DuplicateName;
+                name_entry.value_ptr.* = {};
+            }
 
             var value = try self.payload(child_type, depth);
             errdefer value.deinit(self.allocator);
@@ -534,13 +557,17 @@ fn Encoder(comptime streaming: bool) type {
             initial: T,
         ) EncodeError!void {
             var value = initial;
+            var buffer: [(@bitSizeOf(T) + 6) / 7]u8 = undefined;
+            var len: usize = 0;
 
             while (value >= 0x80) {
-                try self.byte(@truncate(value | 0x80));
+                buffer[len] = @truncate(value | 0x80);
+                len += 1;
                 value >>= 7;
             }
 
-            try self.byte(@truncate(value));
+            buffer[len] = @truncate(value);
+            try self.append(buffer[0 .. len + 1]);
         }
 
         fn int(
@@ -586,6 +613,28 @@ fn Encoder(comptime streaming: bool) type {
             if (invalid_length) return error.SizeLimitExceeded;
 
             try self.int(i32, @intCast(value));
+        }
+
+        fn numberArray(self: *Self, comptime T: type, values: []const T) EncodeError!void {
+            try self.length(values.len);
+            if (self.options.encoding == .bedrock_network) {
+                for (values) |value| try self.int(T, value);
+                return;
+            }
+            _ = std.math.mul(usize, values.len, @sizeOf(T)) catch return error.SizeLimitExceeded;
+            const endian: std.builtin.Endian = if (self.options.encoding == .java) .big else .little;
+            if (endian == @import("builtin").cpu.arch.endian()) return self.append(std.mem.sliceAsBytes(values));
+
+            var buffer: [256]u8 = undefined;
+            var offset: usize = 0;
+            while (offset < values.len) {
+                const count: usize = @min(values.len - offset, buffer.len / @sizeOf(T));
+                for (values[offset..][0..count], 0..) |value, index| {
+                    std.mem.writeInt(T, buffer[index * @sizeOf(T) ..][0..@sizeOf(T)], value, endian);
+                }
+                try self.append(buffer[0 .. count * @sizeOf(T)]);
+                offset += count;
+            }
         }
 
         fn string(
@@ -709,24 +758,12 @@ fn Encoder(comptime streaming: bool) type {
 
                 .string => |value| try self.string(value),
 
-                .int_array => |value| {
-                    try self.length(value.len);
-
-                    for (value) |item| {
-                        try self.int(i32, item);
-                    }
-                },
-
-                .long_array => |value| {
-                    try self.length(value.len);
-
-                    for (value) |item| {
-                        try self.int(i64, item);
-                    }
-                },
+                .int_array => |value| try self.numberArray(i32, value),
+                .long_array => |value| try self.numberArray(i64, value),
 
                 .list => |value| {
                     if (value.element_type == .end and value.items.len != 0) return error.InvalidListType;
+                    if (value.items.len != 0 and depth + 1 >= self.options.max_depth) return error.DepthLimitExceeded;
 
                     try self.byte(@backingInt(value.element_type));
                     try self.length(value.items.len);
@@ -744,6 +781,7 @@ fn Encoder(comptime streaming: bool) type {
                         value.entries.len > self.options.max_collection_length;
 
                     if (too_many_entries) return error.SizeLimitExceeded;
+                    if (value.entries.len != 0 and depth + 1 >= self.options.max_depth) return error.DepthLimitExceeded;
 
                     const index_budget = std.math.mul(
                         usize,
@@ -755,16 +793,22 @@ fn Encoder(comptime streaming: bool) type {
 
                     var names: std.StringHashMapUnmanaged(void) = .empty;
                     defer names.deinit(self.allocator);
+                    if (value.entries.len > small_compound_limit) {
+                        const count = std.math.cast(u32, value.entries.len) orelse return error.SizeLimitExceeded;
+                        try names.ensureTotalCapacity(self.allocator, count);
+                    }
 
-                    for (value.entries) |entry| {
-                        const name_entry = try names.getOrPut(
-                            self.allocator,
-                            entry.name,
-                        );
-
-                        if (name_entry.found_existing) return error.DuplicateName;
-
-                        name_entry.value_ptr.* = {};
+                    for (value.entries, 0..) |entry, index| {
+                        // ponytail: linear scans stop at 16 entries; larger compounds use the index.
+                        if (value.entries.len <= small_compound_limit) {
+                            for (value.entries[0..index]) |previous| {
+                                if (std.mem.eql(u8, previous.name, entry.name)) return error.DuplicateName;
+                            }
+                        } else {
+                            const name_entry = names.getOrPutAssumeCapacity(entry.name);
+                            if (name_entry.found_existing) return error.DuplicateName;
+                            name_entry.value_ptr.* = {};
+                        }
 
                         const tag_type = entry.value.tagType();
                         if (tag_type == .end) return error.InvalidTag;

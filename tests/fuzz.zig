@@ -1,23 +1,28 @@
 const std = @import("std");
 const nbt = @import("nbt");
 const config = @import("config");
+const fixtures = @import("fixtures");
+const external_corpus = fixtures.documents ++ fixtures.compressed;
 
 pub fn main() !void {
     var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
     defer std.debug.assert(debug_allocator.deinit() == .ok);
     const allocator = debug_allocator.allocator();
 
-    var corpus: [9][]u8 = undefined;
+    var corpus: [9 + external_corpus.len][]u8 = undefined;
     var initialized: usize = 0;
     defer for (corpus[0..initialized]) |seed| allocator.free(seed);
     for (&corpus, 0..) |*seed, index| {
-        seed.* = try makeSeed(allocator, caseOptions(index));
+        seed.* = if (index < 9)
+            try makeSeed(allocator, caseOptions(index))
+        else
+            try allocator.dupe(u8, external_corpus[index - 9].bytes);
         initialized += 1;
     }
 
     var prng: std.Random.DefaultPrng = .init(0x4e42545a4947);
     var random = prng.random();
-    var bytes: [4096]u8 = undefined;
+    var bytes: [64 * 1024]u8 = undefined;
 
     for (0..config.iterations) |index| {
         const variant = random.uintLessThan(usize, corpus.len);
@@ -39,13 +44,13 @@ pub fn main() !void {
             }
         }
         options.max_depth = 32;
-        options.max_collection_length = 1024;
+        options.max_collection_length = 8192;
         options.max_compound_entries = 1024;
         options.max_string_bytes = 1024;
-        options.max_input_bytes = bytes.len;
+        options.max_input_bytes = 128 * 1024;
         options.max_decompressed_bytes = 64 * 1024;
-        options.max_output_bytes = 64 * 1024;
-        options.max_total_decoded_bytes = 64 * 1024;
+        options.max_output_bytes = 128 * 1024;
+        options.max_total_decoded_bytes = 1024 * 1024;
         options.reject_trailing_bytes = true;
 
         if (nbt.parse(allocator, bytes[0..len], options)) |document_value| {
@@ -61,6 +66,7 @@ pub fn main() !void {
 }
 
 fn caseOptions(index: usize) nbt.Options {
+    if (index >= 9) return external_corpus[index - 9].options;
     return .{
         .encoding = switch (index / 3) {
             0 => .java,

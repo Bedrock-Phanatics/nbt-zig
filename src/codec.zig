@@ -850,9 +850,42 @@ pub fn encode(
     };
     errdefer encoder.deinit();
 
+    const hint = 3 +| document.name.len +| sizeHint(document.root, options.max_depth);
+    try encoder.bytes.ensureTotalCapacityPrecise(allocator, @min(hint, options.max_output_bytes));
     try encoder.document(document);
 
     return encoder.bytes.toOwnedSlice(allocator);
+}
+
+/// Rough output size, so encode allocates once.
+fn sizeHint(tag: Tag, depth: usize) usize {
+    if (depth == 0) return 0;
+    return switch (tag) {
+        .end => 0,
+        .byte => 1,
+        .short => 2,
+        .int, .float => 4,
+        .long, .double => 8,
+        .string => |value| 2 +| value.len,
+        .byte_array => |value| 4 +| value.len,
+        .int_array => |value| 4 +| value.len *| 4,
+        .long_array => |value| 4 +| value.len *| 8,
+        .list => |value| blk: {
+            switch (value.element_type) {
+                .byte, .short, .int, .long, .float, .double => if (value.items.len != 0)
+                    break :blk 5 +| value.items.len *| sizeHint(value.items[0], depth - 1),
+                else => {},
+            }
+            var size: usize = 5;
+            for (value.items) |item| size +|= sizeHint(item, depth - 1);
+            break :blk size;
+        },
+        .compound => |value| blk: {
+            var size: usize = 1;
+            for (value.entries) |entry| size +|= 3 +| entry.name.len +| sizeHint(entry.value, depth - 1);
+            break :blk size;
+        },
+    };
 }
 
 pub fn encodeWriter(

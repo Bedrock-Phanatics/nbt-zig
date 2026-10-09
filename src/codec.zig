@@ -35,6 +35,8 @@ const Decoder = struct {
     offset: usize = 0,
     allocated: usize = 0,
     options: Options,
+    /// Shared by nested compounds; each copies its own run out when done.
+    entries: std.ArrayList(types.Entry) = .empty,
 
     fn reserve(self: *Decoder, amount: usize) DecodeError!void {
         self.allocated = std.math.add(
@@ -304,18 +306,18 @@ const Decoder = struct {
     }
 
     fn compound(self: *Decoder, depth: usize) DecodeError!Tag {
-        var entries: std.ArrayList(types.Entry) = .empty;
+        const start = self.entries.items.len;
         var names: std.StringHashMapUnmanaged(void) = .empty;
 
         defer names.deinit(self.allocator);
 
         errdefer {
-            for (entries.items) |*entry| {
+            for (self.entries.items[start..]) |*entry| {
                 self.allocator.free(entry.name);
                 entry.value.deinit(self.allocator);
             }
 
-            entries.deinit(self.allocator);
+            self.entries.shrinkRetainingCapacity(start);
         }
 
         while (true) {
@@ -323,9 +325,10 @@ const Decoder = struct {
             if (child_type == .end) break;
             if (depth >= self.options.max_depth) return error.DepthLimitExceeded;
 
+            const count = self.entries.items.len - start;
             const too_many_entries =
-                entries.items.len >= self.options.max_compound_entries or
-                entries.items.len >= self.options.max_collection_length;
+                count >= self.options.max_compound_entries or
+                count >= self.options.max_collection_length;
 
             if (too_many_entries) return error.SizeLimitExceeded;
 
@@ -334,15 +337,15 @@ const Decoder = struct {
             const name = try self.string();
             errdefer self.allocator.free(name);
 
-            // ponytail: linear scans stop at 16 entries; larger compounds use the index.
-            if (entries.items.len < small_compound_limit) {
-                for (entries.items) |entry| {
+            const siblings = self.entries.items[start..];
+            if (count < small_compound_limit) {
+                for (siblings) |entry| {
                     if (std.mem.eql(u8, entry.name, name)) return error.DuplicateName;
                 }
             } else {
-                if (entries.items.len == small_compound_limit) {
+                if (count == small_compound_limit) {
                     try names.ensureTotalCapacity(self.allocator, small_compound_limit + 1);
-                    for (entries.items) |entry| names.putAssumeCapacityNoClobber(entry.name, {});
+                    for (siblings) |entry| names.putAssumeCapacityNoClobber(entry.name, {});
                 }
                 const name_entry = try names.getOrPut(self.allocator, name);
                 if (name_entry.found_existing) return error.DuplicateName;
@@ -352,17 +355,16 @@ const Decoder = struct {
             var value = try self.payload(child_type, depth);
             errdefer value.deinit(self.allocator);
 
-            try entries.append(self.allocator, .{
+            try self.entries.append(self.allocator, .{
                 .name = name,
                 .value = value,
             });
         }
 
-        return .{
-            .compound = .{
-                .entries = try entries.toOwnedSlice(self.allocator),
-            },
-        };
+        const entries = try self.allocator.dupe(types.Entry, self.entries.items[start..]);
+        self.entries.shrinkRetainingCapacity(start);
+
+        return .{ .compound = .{ .entries = entries } };
     }
 };
 
@@ -378,6 +380,7 @@ pub fn decode(
         .data = data,
         .options = options,
     };
+    defer decoder.entries.deinit(allocator);
 
     const root_type = try decoder.tagType();
     if (root_type == .end) return error.InvalidRoot;
@@ -503,7 +506,7 @@ fn Encoder(comptime streaming: bool) type {
             self.bytes.deinit(self.allocator);
         }
 
-        fn append(
+        inline fn append(
             self: *Self,
             data: []const u8,
         ) EncodeError!void {
@@ -513,14 +516,10 @@ fn Encoder(comptime streaming: bool) type {
                 data.len,
             ) catch return error.SizeLimitExceeded;
 
-            if (streaming) {
-                if (end > self.options.max_output_bytes) return error.SizeLimitExceeded;
-                try self.bytes.writeAll(data);
-                self.written = end;
-                return;
-            }
+            if (streaming) return self.write(data, end);
 
-            try bounded_buffer.ensureCapacity(
+            // Capacity never exceeds the limit, so the fast path needs no check.
+            if (end > self.bytes.capacity) try bounded_buffer.ensureCapacity(
                 &self.bytes,
                 self.allocator,
                 end,
@@ -528,6 +527,13 @@ fn Encoder(comptime streaming: bool) type {
             );
 
             self.bytes.appendSliceAssumeCapacity(data);
+        }
+
+        // Out of line on purpose; inlining writeAll everywhere was slower.
+        fn write(self: *Self, data: []const u8, end: usize) EncodeError!void {
+            if (end > self.options.max_output_bytes) return error.SizeLimitExceeded;
+            try self.bytes.writeAll(data);
+            self.written = end;
         }
 
         fn byte(
@@ -799,7 +805,6 @@ fn Encoder(comptime streaming: bool) type {
                     }
 
                     for (value.entries, 0..) |entry, index| {
-                        // ponytail: linear scans stop at 16 entries; larger compounds use the index.
                         if (value.entries.len <= small_compound_limit) {
                             for (value.entries[0..index]) |previous| {
                                 if (std.mem.eql(u8, previous.name, entry.name)) return error.DuplicateName;

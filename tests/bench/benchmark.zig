@@ -43,7 +43,6 @@ pub fn main(init: std.process.Init) !void {
     try profileCompression(allocator, init.io);
 }
 
-/// Counts calls and tracks peak live bytes of the wrapped allocator.
 const CountingAllocator = struct {
     child: std.mem.Allocator,
     allocations: usize = 0,
@@ -190,7 +189,6 @@ fn measure(
     return @intCast(start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds);
 }
 
-/// Visits every tag and sums payload lengths, like a read-only consumer would.
 fn walk(tag: nbt.Tag) usize {
     return switch (tag) {
         .list => |list| blk: {
@@ -210,7 +208,6 @@ fn walk(tag: nbt.Tag) usize {
     };
 }
 
-/// Little-endian Bedrock NBT bytes for synthetic shapes.
 const Raw = struct {
     bytes: std.ArrayList(u8) = .empty,
     allocator: std.mem.Allocator,
@@ -343,24 +340,20 @@ fn makeDocument(allocator: std.mem.Allocator, case: Case) !nbt.Document {
     return document;
 }
 
-/// Rejection cost and peak memory for hostile inputs. Fails if a limit stops holding.
 fn runMalformed(allocator: std.mem.Allocator, io: std.Io) !void {
     var raw: Raw = .{ .allocator = allocator };
     defer raw.bytes.deinit(allocator);
 
-    // 600 nested single-item lists against the 512 depth limit.
     try raw.tag(.list, "");
     for (0..600) |_| try raw.list(.list, 1);
     const depth_bomb = try raw.bytes.toOwnedSlice(allocator);
     defer allocator.free(depth_bomb);
 
-    // A million-entry compound list backed by six bytes.
     try raw.tag(.list, "");
     try raw.list(.compound, 1_000_000);
     const length_bomb = try raw.bytes.toOwnedSlice(allocator);
     defer allocator.free(length_bomb);
 
-    // 1,000 distinct names, then a duplicate of the first.
     try raw.tag(.compound, "");
     var name: [32]u8 = undefined;
     for (0..1001) |index| {

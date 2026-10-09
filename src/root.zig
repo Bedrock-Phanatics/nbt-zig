@@ -20,7 +20,6 @@ pub const Document = types.Document;
 
 pub const Error = CodecError || CompressionError || std.mem.Allocator.Error;
 
-/// Parses an owned document. Uncompressed slices are read in place.
 pub fn parse(
     allocator: std.mem.Allocator,
     input: []const u8,
@@ -43,7 +42,6 @@ pub fn parse(
     return codec.decode(allocator, plain, opts);
 }
 
-/// Serializes a document. The caller owns the returned bytes.
 pub fn serialize(
     allocator: std.mem.Allocator,
     document: Document,
@@ -64,7 +62,7 @@ pub fn serialize(
     );
 }
 
-/// Buffers the remaining input, then parses it. The caller keeps the reader.
+/// Buffers all remaining input before parsing.
 pub fn parseReader(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
@@ -100,7 +98,7 @@ pub fn parseReader(
 }
 
 /// Streams uncompressed NBT; compressed output is buffered. Does not flush.
-/// Errors may leave partial output. The caller keeps the writer.
+/// Errors may leave partial output.
 pub fn writeDocument(
     allocator: std.mem.Allocator,
     writer: *std.Io.Writer,

@@ -2,7 +2,6 @@ const std = @import("std");
 
 pub const Error = error{SizeLimitExceeded};
 
-/// Returns a geometric capacity capped at limit.
 pub fn nextCapacity(current: usize, needed: usize, limit: usize) Error!usize {
     if (needed > limit) return error.SizeLimitExceeded;
     if (needed <= current) return current;

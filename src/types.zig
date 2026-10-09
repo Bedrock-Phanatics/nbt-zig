@@ -52,7 +52,7 @@ pub const Compound = struct {
     }
 };
 
-/// An owned NBT value. Its slices belong to the containing tree.
+/// Owns all of its slices.
 pub const Tag = union(TagType) {
     end: void,
     byte: i8,
@@ -151,7 +151,6 @@ pub const Tag = union(TagType) {
     }
 };
 
-/// Owns its name and tag tree.
 pub const Document = struct {
     name: []u8,
     root: Tag,

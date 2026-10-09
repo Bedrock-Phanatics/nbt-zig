@@ -10,7 +10,6 @@ pub const Compression = enum {
     zlib,
 };
 
-/// Parsing and serialization limits.
 pub const Options = struct {
     encoding: Encoding = .java,
     compression: Compression = .none,

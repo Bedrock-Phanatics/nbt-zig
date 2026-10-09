@@ -49,7 +49,6 @@ test "duplicate detection crosses the small compound threshold" {
                 fixtures.Fixture{ .name = "indexed-compound", .bytes = encoded, .options = .bedrock },
             });
         }
-        // Append a duplicate of the first name immediately before TAG_End.
         const duplicate = try std.mem.concat(allocator, u8, &.{ encoded[0 .. encoded.len - 1], &.{ 1, 6, 0 }, "field0", &.{ 8, 0 } });
         defer allocator.free(duplicate);
         try std.testing.expectError(error.DuplicateName, nbt.parse(allocator, duplicate, .bedrock));

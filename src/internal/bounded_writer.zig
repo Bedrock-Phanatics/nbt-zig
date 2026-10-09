@@ -2,7 +2,7 @@ const std = @import("std");
 
 const bounded_buffer = @import("bounded_buffer.zig");
 
-/// A size-limited allocating writer. `failure` explains `WriteFailed`.
+/// `failure` explains `WriteFailed`.
 pub const BoundedWriter = struct {
     allocator: std.mem.Allocator,
     writer: std.Io.Writer,

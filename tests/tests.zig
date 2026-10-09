@@ -532,6 +532,38 @@ test "duplicate names and rejected builder values remain safe" {
     try std.testing.expectError(error.InvalidRoot, nbt.Document.init(allocator, "", .{ .end = {} }));
 }
 
+test "nested compounds check names only against their own siblings" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ 3, 20 }) |count| {
+        var wire: std.ArrayList(u8) = .empty;
+        defer wire.deinit(allocator);
+        try wire.appendSlice(allocator, &.{ 10, 0, 0 });
+        for (0..2) |level| {
+            for (0..count) |index| try wire.appendSlice(allocator, &.{ 1, 2, 0, 'k', 'a' + @as(u8, @intCast(index)), @intCast(level) });
+            if (level == 0) try wire.appendSlice(allocator, &.{ 10, 5, 0, 'c', 'h', 'i', 'l', 'd' });
+        }
+        try wire.append(allocator, 0);
+        const child_end = wire.items.len;
+        try wire.append(allocator, 0);
+
+        var document = try nbt.parse(allocator, wire.items, .bedrock);
+        defer document.deinit(allocator);
+        const child = document.root.compound.get("child").?.compound;
+        try std.testing.expectEqual(count + 1, document.root.compound.entries.len);
+        try std.testing.expectEqual(@as(i8, 0), document.root.compound.get("ka").?.byte);
+        try std.testing.expectEqual(@as(i8, 1), child.get("ka").?.byte);
+        try std.testing.expectEqual(count, child.entries.len);
+
+        const after_child = try std.mem.concat(allocator, u8, &.{ wire.items[0..child_end], &.{ 1, 2, 0, 'k', 'a', 0, 0 } });
+        defer allocator.free(after_child);
+        try std.testing.expectError(error.DuplicateName, nbt.parse(allocator, after_child, .bedrock));
+
+        const inside_child = try std.mem.concat(allocator, u8, &.{ wire.items[0 .. child_end - 1], &.{ 1, 2, 0, 'k', 'a', 0, 0, 0 } });
+        defer allocator.free(inside_child);
+        try std.testing.expectError(error.DuplicateName, nbt.parse(allocator, inside_child, .bedrock));
+    }
+}
+
 test "compressed and decompressed output limits are independent" {
     const allocator = std.testing.allocator;
     var document = try nbt.Document.init(allocator, "", .{ .byte = 0 });
@@ -675,8 +707,7 @@ test "TAG_List truncated huge length rejects before large allocation (Bedrock)" 
 
 test "TAG_List truncated huge length rejects before large allocation (Bedrock Network)" {
     const allocator = std.testing.allocator;
-    // in bedrock_network len = 1_000_000 zigzag encoded is 2_000_000
-    // varint = 0x80, 0x89, 0x7A
+    // 1_000_000 zigzag-encodes to the varint 0x80 0x89 0x7a.
     const wire = [_]u8{ 9, 0, 1, 0x80, 0x89, 0x7A };
     try std.testing.expectError(error.UnexpectedEndOfInput, nbt.parse(allocator, &wire, .bedrock_network));
 }

@@ -1,9 +1,7 @@
-# Zig build output and cache
 .zig-cache/
 zig-out/
 .clawpatch/
 
-# Editors
 .vs/
 .vscode/
 .idea/
@@ -12,7 +10,6 @@ zig-out/
 *.userosscache
 *.DotSettings.user
 
-# Local tooling and operating-system metadata
 *.log
 *.tmp
 *.pid

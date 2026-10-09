@@ -19,7 +19,7 @@ pub fn longArray(allocator: Allocator, value: []const i64) Allocator.Error!types
     return .{ .long_array = try allocator.dupe(i64, value) };
 }
 
-/// A homogeneous list builder. `append` takes ownership on success.
+/// `append` takes ownership on success.
 pub const List = struct {
     allocator: Allocator,
     element_type: types.TagType,
@@ -68,7 +68,7 @@ pub const List = struct {
     }
 };
 
-/// An ordered compound builder. `add` copies names and takes values on success.
+/// `add` copies names and takes values on success.
 pub const Compound = struct {
     allocator: Allocator,
     entries: std.ArrayList(types.Entry) = .empty,

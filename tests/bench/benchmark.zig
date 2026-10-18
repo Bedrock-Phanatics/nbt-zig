@@ -24,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "bedrock-entity", .shape = .fixture, .payload_size = 1, .iterations = 500, .options = .bedrock },
         .{ .name = "bedrock-structure", .shape = .fixture, .payload_size = 2, .iterations = 100, .options = .bedrock },
         .{ .name = "network-entity", .shape = .fixture, .payload_size = 3, .iterations = 500, .options = .bedrock_network },
+        .{ .name = "network-structure", .shape = .fixture, .payload_size = 2, .iterations = 100, .options = .bedrock_network },
         .{ .name = "java-level", .shape = .fixture, .payload_size = 4, .iterations = 200, .options = .java },
         .{ .name = "compound-4", .shape = .compound, .payload_size = 4, .iterations = 20_000, .options = .bedrock },
         .{ .name = "compound-16", .shape = .compound, .payload_size = 16, .iterations = 10_000, .options = .bedrock },

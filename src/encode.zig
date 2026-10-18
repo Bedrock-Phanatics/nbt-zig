@@ -303,11 +303,39 @@ fn Encoder(comptime format: Format) type {
             }
         }
 
+        /// Writes zigzag varints, turning runs of one-byte values into single 16-byte writes.
+        fn zigzags(self: *Self, comptime T: type, values: []const T) WriteError!void {
+            const lanes = 16;
+            const Unsigned = @Int(.unsigned, @bitSizeOf(T));
+            var rest = values;
+
+            while (rest.len != 0) {
+                if (rest.len >= lanes) {
+                    const chunk: @Vector(lanes, T) = rest[0..lanes].*;
+                    const unsigned: @Vector(lanes, Unsigned) = @bitCast(chunk);
+                    const signs: @Vector(lanes, Unsigned) = @bitCast(chunk >> @splat(@bitSizeOf(T) - 1));
+                    const encoded = (unsigned << @splat(1)) ^ signs;
+
+                    if (@reduce(.And, encoded < @as(@Vector(lanes, Unsigned), @splat(0x80)))) {
+                        const narrow: [lanes]u8 = @as(@Vector(lanes, u8), @truncate(encoded));
+                        try self.bytes(&narrow);
+                        rest = rest[lanes..];
+                        continue;
+                    }
+                }
+
+                // A miss means wider values, so take the next batch one by one before checking again.
+                const batch = rest[0..@min(rest.len, lanes)];
+                for (batch) |value| try self.scalar(if (T == i32) .int else .long, value);
+                rest = rest[batch.len..];
+            }
+        }
+
         fn array(self: *Self, comptime T: type, values: []const T) WriteError!void {
             try self.length(values.len);
 
             if (varints) {
-                for (values) |value| try self.scalar(if (T == i32) .int else .long, value);
+                try self.zigzags(T, values);
             } else if (endian == native_endian) {
                 try self.bytes(std.mem.sliceAsBytes(values));
             } else {

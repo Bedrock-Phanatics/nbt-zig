@@ -162,6 +162,32 @@ fn Decoder(comptime format: Format) type {
             return @bitCast((value >> 1) ^ (0 -% (value & 1)));
         }
 
+        /// Fills `out` with zigzag varints, converting runs of one-byte values 16 at a time.
+        fn zigzags(self: *Self, comptime T: type, out: []T) Error!void {
+            const lanes = 16;
+            const Unsigned = @Int(.unsigned, @bitSizeOf(T));
+            var index: usize = 0;
+
+            while (index < out.len) {
+                if (out.len - index >= lanes and self.remaining() >= lanes) {
+                    const chunk: @Vector(lanes, u8) = self.data[self.offset..][0..lanes].*;
+                    if (@reduce(.And, chunk < @as(@Vector(lanes, u8), @splat(0x80)))) {
+                        const wide: @Vector(lanes, Unsigned) = chunk;
+                        const one: @Vector(lanes, Unsigned) = @splat(1);
+                        const zero: @Vector(lanes, Unsigned) = @splat(0);
+                        out[index..][0..lanes].* = @bitCast((wide >> one) ^ (zero -% (wide & one)));
+                        self.offset += lanes;
+                        index += lanes;
+                        continue;
+                    }
+                }
+
+                // A miss means wider values, so take the next batch one by one before checking again.
+                const end = @min(out.len, index + lanes);
+                while (index < end) : (index += 1) out[index] = try self.zigzag(T);
+            }
+        }
+
         fn scalar(self: *Self, comptime tag_type: TagType) Error!Payload(tag_type) {
             const T = Payload(tag_type);
             if (varints and (T == i32 or T == i64)) return self.zigzag(T);
@@ -235,7 +261,7 @@ fn Decoder(comptime format: Format) type {
             errdefer self.allocator.free(result);
 
             if (varint_array) {
-                for (result) |*item| item.* = try self.zigzag(T);
+                try self.zigzags(T, result);
             } else {
                 const input = try self.take(size);
 

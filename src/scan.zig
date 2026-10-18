@@ -57,13 +57,6 @@ fn run(input: []const u8, options: Options, start: Start) Error!usize {
     return len;
 }
 
-/// A list still owing `remaining` elements, or a compound when `element` is `.end`
-/// with `remaining` counting the entries seen so far.
-const Frame = struct {
-    remaining: usize,
-    element: TagType,
-};
-
 fn Scanner(comptime format: Format) type {
     return struct {
         const Self = @This();
@@ -147,33 +140,54 @@ fn Scanner(comptime format: Format) type {
             if (!varints) return self.skip(count * @sizeOf(T));
             if (count == 0) return;
 
-            // Only where each varint ends matters, so this just walks the bytes and checks
-            // the final byte of every value, failing on the same byte the decoder would.
+            // Only where each varint ends matters, so this walks the bytes and checks the
+            // final byte of every value, failing on the same byte the decoder would.
             const max_len = (@bitSizeOf(T) + 6) / 7;
             const last_bits = @bitSizeOf(T) - 7 * (max_len - 1);
-            const strict = self.options.reject_noncanonical_varints;
+            const lanes = 16;
+            const Chunk = @Vector(lanes, u8);
+            const data = self.data;
+            var offset = self.offset;
             var remaining = count;
-            var width: usize = 0;
 
-            for (self.data[self.offset..], self.offset..) |current, index| {
-                width += 1;
-                if (width == max_len) {
-                    if (current >> last_bits != 0) return error.VarIntOverflow;
-                } else if (current & 0x80 != 0) {
-                    continue;
+            var batch: usize = 0;
+
+            while (remaining != 0) {
+                // Small values are one byte each, and a run of those needs no checks at all.
+                // A miss means wider values, so the next batch goes one by one before checking again.
+                if (batch == 0) {
+                    if (remaining >= lanes and data.len - offset >= lanes) {
+                        const chunk: Chunk = data[offset..][0..lanes].*;
+                        if (@reduce(.And, chunk < @as(Chunk, @splat(0x80)))) {
+                            offset += lanes;
+                            remaining -= lanes;
+                            continue;
+                        }
+                    }
+
+                    batch = lanes;
                 }
 
-                if (strict and width > 1 and current == 0) return error.NonCanonicalVarInt;
+                batch -= 1;
+                var width: usize = 0;
+                const last = while (true) {
+                    if (offset >= data.len) return error.UnexpectedEndOfInput;
+                    const current = data[offset];
+                    offset += 1;
+                    width += 1;
 
+                    if (width == max_len) {
+                        if (current >> last_bits != 0) return error.VarIntOverflow;
+                        break current;
+                    }
+                    if (current & 0x80 == 0) break current;
+                };
+
+                if (width > 1 and last == 0 and self.options.reject_noncanonical_varints) return error.NonCanonicalVarInt;
                 remaining -= 1;
-                width = 0;
-                if (remaining == 0) {
-                    self.offset = index + 1;
-                    return;
-                }
             }
 
-            return error.UnexpectedEndOfInput;
+            self.offset = offset;
         }
 
         fn length(self: *Self) Error!usize {
@@ -238,7 +252,13 @@ fn Scanner(comptime format: Format) type {
 
         /// Walks one value with an explicit stack, so nesting costs no native stack.
         fn walk(self: *Self, root_type: TagType) Error!void {
-            var stack: [Options.max_supported_depth]Frame = undefined;
+            // Each open container is a list owing `counts` more `elements`, or a compound
+            // marked by `.end` whose count is the entries seen so far. Split arrays keep this
+            // under a page, so it costs no stack probe.
+            var counts: [Options.max_supported_depth]u32 = undefined;
+            var elements: [Options.max_supported_depth]TagType = undefined;
+            // Past 2^32 entries a compound is far beyond any real input limit anyway.
+            const entry_limit: u32 = @intCast(@min(self.options.max_compound_entries, self.options.max_collection_length, std.math.maxInt(u32)));
             var depth: usize = 0;
             var tag_type = root_type;
 
@@ -274,29 +294,32 @@ fn Scanner(comptime format: Format) type {
                             .int => try self.integers(i32, len),
                             .long => try self.integers(i64, len),
                             else => {
-                                stack[depth] = .{ .remaining = len, .element = element };
+                                counts[depth] = @intCast(len);
+                                elements[depth] = element;
                                 depth += 1;
                             },
                         };
                     },
 
                     .compound => {
-                        stack[depth] = .{ .remaining = 0, .element = .end };
+                        counts[depth] = 0;
+                        elements[depth] = .end;
                         depth += 1;
                     },
                 }
 
                 tag_type = next: while (depth != 0) {
-                    const frame = &stack[depth - 1];
+                    const count = &counts[depth - 1];
+                    const element = elements[depth - 1];
 
-                    if (frame.element != .end) {
-                        if (frame.remaining == 0) {
+                    if (element != .end) {
+                        if (count.* == 0) {
                             depth -= 1;
                             continue;
                         }
 
-                        frame.remaining -= 1;
-                        break :next frame.element;
+                        count.* -= 1;
+                        break :next element;
                     }
 
                     const child = try self.tagType();
@@ -306,11 +329,9 @@ fn Scanner(comptime format: Format) type {
                     }
 
                     if (depth >= self.options.max_depth) return error.DepthLimitExceeded;
-                    if (frame.remaining >= self.options.max_compound_entries or frame.remaining >= self.options.max_collection_length) {
-                        return error.SizeLimitExceeded;
-                    }
+                    if (count.* >= entry_limit) return error.SizeLimitExceeded;
 
-                    frame.remaining += 1;
+                    count.* += 1;
                     try self.string();
                     break :next child;
                 } else return;

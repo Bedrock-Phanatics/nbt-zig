@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const small_limit = @import("internal/unique_names.zig").small_limit;
 const types = @import("types.zig");
 
 pub fn string(allocator: Allocator, value: []const u8) Allocator.Error!types.Tag {
@@ -39,32 +40,20 @@ pub const List = struct {
         self.* = undefined;
     }
 
-    pub fn append(
-        self: *List,
-        value: types.Tag,
-    ) (error{ TypeMismatch, InvalidListType } || Allocator.Error)!void {
+    pub fn append(self: *List, value: types.Tag) (error{ TypeMismatch, InvalidListType } || Allocator.Error)!void {
         const element_type = value.tagType();
 
-        const invalid_type =
-            self.element_type == .end or
-            element_type == .end;
-
-        if (invalid_type) return error.InvalidListType;
+        if (self.element_type == .end or element_type == .end) return error.InvalidListType;
         if (element_type != self.element_type) return error.TypeMismatch;
 
         try self.items.append(self.allocator, value);
     }
 
+    /// Hands over the items and leaves the builder empty and reusable.
     pub fn finish(self: *List) Allocator.Error!types.Tag {
         const items = try self.items.toOwnedSlice(self.allocator);
-        self.items = .empty;
 
-        return .{
-            .list = .{
-                .element_type = self.element_type,
-                .items = items,
-            },
-        };
+        return .{ .list = .{ .element_type = self.element_type, .items = items } };
     }
 };
 
@@ -72,6 +61,7 @@ pub const List = struct {
 pub const Compound = struct {
     allocator: Allocator,
     entries: std.ArrayList(types.Entry) = .empty,
+    /// Built once the compound outgrows a linear scan.
     names: std.StringHashMapUnmanaged(void) = .empty,
 
     pub fn init(allocator: Allocator) Compound {
@@ -79,47 +69,54 @@ pub const Compound = struct {
     }
 
     pub fn deinit(self: *Compound) void {
-        for (self.entries.items) |*entry| {
-            self.allocator.free(entry.name);
-            entry.value.deinit(self.allocator);
-        }
+        for (self.entries.items) |*entry| entry.deinit(self.allocator);
 
         self.entries.deinit(self.allocator);
         self.names.deinit(self.allocator);
         self.* = undefined;
     }
 
-    pub fn add(
-        self: *Compound,
-        name: []const u8,
-        value: types.Tag,
-    ) (error{ DuplicateName, InvalidTag } || Allocator.Error)!void {
+    pub fn contains(self: *const Compound, name: []const u8) bool {
+        if (self.names.count() != 0) return self.names.contains(name);
+
+        for (self.entries.items) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return true;
+        }
+
+        return false;
+    }
+
+    pub fn add(self: *Compound, name: []const u8, value: types.Tag) (error{ DuplicateName, InvalidTag } || Allocator.Error)!void {
         if (value.tagType() == .end) return error.InvalidTag;
-        if (self.names.contains(name)) return error.DuplicateName;
+        if (self.contains(name)) return error.DuplicateName;
+
+        try self.entries.ensureUnusedCapacity(self.allocator, 1);
 
         const owned_name = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(owned_name);
 
-        try self.names.putNoClobber(self.allocator, owned_name, {});
-        errdefer _ = self.names.remove(owned_name);
+        if (self.entries.items.len >= small_limit) try self.index(owned_name);
 
-        try self.entries.append(self.allocator, .{
-            .name = owned_name,
-            .value = value,
-        });
+        self.entries.appendAssumeCapacity(.{ .name = owned_name, .value = value });
     }
 
+    fn index(self: *Compound, name: []u8) Allocator.Error!void {
+        if (self.names.count() == 0) {
+            const count = std.math.cast(u32, self.entries.items.len + 1) orelse return error.OutOfMemory;
+            try self.names.ensureTotalCapacity(self.allocator, count);
+
+            for (self.entries.items) |entry| self.names.putAssumeCapacityNoClobber(entry.name, {});
+        }
+
+        try self.names.putNoClobber(self.allocator, name, {});
+    }
+
+    /// Hands over the entries and leaves the builder empty and reusable.
     pub fn finish(self: *Compound) Allocator.Error!types.Tag {
         const entries = try self.entries.toOwnedSlice(self.allocator);
 
-        self.names.deinit(self.allocator);
-        self.names = .empty;
-        self.entries = .empty;
+        self.names.clearAndFree(self.allocator);
 
-        return .{
-            .compound = .{
-                .entries = entries,
-            },
-        };
+        return .{ .compound = .{ .entries = entries } };
     }
 };

@@ -53,11 +53,22 @@ pub fn main() !void {
         options.max_total_decoded_bytes = 1024 * 1024;
         options.reject_trailing_bytes = true;
 
+        if (options.compression == .none) try checkScanner(allocator, bytes[0..len], options);
+
         if (nbt.parse(allocator, bytes[0..len], options)) |document_value| {
             var document = document_value;
             defer document.deinit(allocator);
             const encoded = try nbt.serialize(allocator, document, options);
             defer allocator.free(encoded);
+
+            var plain = options;
+            plain.compression = .none;
+            const plain_len = if (options.compression == .none) encoded.len else blk: {
+                const bytes_plain = try nbt.serialize(allocator, document, plain);
+                defer allocator.free(bytes_plain);
+                break :blk bytes_plain.len;
+            };
+            if (try nbt.encodedLength(document, plain) != plain_len) return error.EncodedLengthMismatch;
             var reparsed = try nbt.parse(allocator, encoded, options);
             defer reparsed.deinit(allocator);
             if (!document.eql(reparsed)) return error.RoundTripMismatch;
@@ -92,4 +103,21 @@ fn makeSeed(allocator: std.mem.Allocator, options: nbt.Options) ![]u8 {
     var document = try nbt.parse(allocator, wire, plain_options);
     defer document.deinit(allocator);
     return nbt.serialize(allocator, document, options);
+}
+
+/// The scanner must accept exactly what the decoder accepts, apart from duplicate names
+/// and the decoded-bytes budget, and report the same span.
+fn checkScanner(allocator: std.mem.Allocator, input: []const u8, options: nbt.Options) !void {
+    var lenient = options;
+    lenient.max_total_decoded_bytes = std.math.maxInt(usize);
+    const scanned = nbt.scanDocument(input, lenient);
+
+    if (nbt.parsePrefix(allocator, input, lenient)) |parsed_value| {
+        var parsed = parsed_value;
+        defer parsed.document.deinit(allocator);
+        if ((scanned catch return error.ScannerRejected) != parsed.len) return error.ScannerLengthMismatch;
+    } else |err| switch (err) {
+        error.DuplicateName, error.OutOfMemory => {},
+        else => if (scanned) |_| return error.ScannerAccepted else |scan_err| if (scan_err != err) return error.ScannerErrorMismatch,
+    }
 }

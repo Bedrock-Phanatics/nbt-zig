@@ -13,6 +13,7 @@ pub const CodecError = error{
     InvalidUtf8,
     InvalidModifiedUtf8,
     VarIntOverflow,
+    NonCanonicalVarInt,
     TrailingData,
     TypeMismatch,
     InvalidOptions,

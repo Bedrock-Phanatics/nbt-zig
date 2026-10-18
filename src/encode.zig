@@ -6,7 +6,7 @@ const BoundedWriter = @import("internal/BoundedWriter.zig");
 const unique_names = @import("internal/unique_names.zig");
 const utf8 = @import("utf8.zig");
 const options_mod = @import("options.zig");
-const Encoding = options_mod.Encoding;
+const Format = options_mod.Format;
 const Options = options_mod.Options;
 const types = @import("types.zig");
 const Bits = types.Bits;
@@ -23,13 +23,28 @@ pub const WriteError = Error || std.Io.Writer.Error;
 
 /// Expects validated options.
 pub fn encode(allocator: Allocator, document: Document, options: Options) Error![]u8 {
-    const java = options.encoding == .java;
-    const hint = 1 +| stringHint(document.name, java) +| sizeHint(document.root, options.max_depth, java);
+    return encodeWith(allocator, document, options, write);
+}
 
-    var output = try BoundedWriter.init(allocator, options.max_output_bytes, hint);
+/// Encodes a headerless payload. Expects validated options.
+pub fn encodePayload(allocator: Allocator, tag: Tag, options: Options) Error![]u8 {
+    return encodeWith(allocator, tag, options, writePayload);
+}
+
+fn encodeWith(
+    allocator: Allocator,
+    value: anytype,
+    options: Options,
+    comptime writeFn: fn (Allocator, *std.Io.Writer, @TypeOf(value), Options) WriteError!void,
+) Error![]u8 {
+    // Oversized or unencodable values leave the matching error to the encoder.
+    const bound = measure(value, options, false);
+    const size = if (bound > options.max_output_bytes) 0 else bound;
+
+    var output = try BoundedWriter.init(allocator, options.max_output_bytes, size);
     defer output.deinit();
 
-    write(allocator, &output.writer, document, options) catch |err| return switch (err) {
+    writeFn(allocator, &output.writer, value, options) catch |err| return switch (err) {
         error.WriteFailed => output.err(),
         else => |e| e,
     };
@@ -39,13 +54,9 @@ pub fn encode(allocator: Allocator, document: Document, options: Options) Error!
 
 /// Expects validated options.
 pub fn write(allocator: Allocator, writer: *std.Io.Writer, document: Document, options: Options) WriteError!void {
-    switch (options.encoding) {
-        inline else => |encoding| {
-            var encoder: Encoder(encoding) = .{
-                .allocator = allocator,
-                .writer = writer,
-                .options = options,
-            };
+    switch (options.format()) {
+        inline else => |format| {
+            var encoder: Encoder(format) = .{ .allocator = allocator, .writer = writer, .options = options };
             defer encoder.names.deinit(allocator);
 
             try encoder.document(document);
@@ -53,47 +64,54 @@ pub fn write(allocator: Allocator, writer: *std.Io.Writer, document: Document, o
     }
 }
 
-/// Close to the encoded size so serialize usually allocates once.
-fn sizeHint(tag: Tag, depth: usize, java: bool) usize {
-    if (depth == 0) return 0;
+/// Writes a headerless payload. Expects validated options.
+pub fn writePayload(allocator: Allocator, writer: *std.Io.Writer, tag: Tag, options: Options) WriteError!void {
+    switch (options.format()) {
+        inline else => |format| {
+            var encoder: Encoder(format) = .{ .allocator = allocator, .writer = writer, .options = options };
+            defer encoder.names.deinit(allocator);
 
-    return switch (tag) {
-        .end => 0,
-        .byte => 1,
-        .short => 2,
-        .int, .float => 4,
-        .long, .double => 8,
-        .string => |value| stringHint(value, java),
-        .byte_array => |value| 4 +| value.len,
-        .int_array => |value| 4 +| value.len *| 4,
-        .long_array => |value| 4 +| value.len *| 8,
-
-        .list => |value| {
-            if (value.element_type.isScalar() and value.items.len != 0) {
-                return 5 +| value.items.len *| sizeHint(value.items[0], depth - 1, java);
-            }
-
-            var size: usize = 5;
-            for (value.items) |item| size +|= sizeHint(item, depth - 1, java);
-            return size;
+            try encoder.payload(tag, 0);
         },
+    }
+}
 
-        .compound => |value| {
-            var size: usize = 1;
-            for (value.entries) |entry| size +|= 1 +| stringHint(entry.name, java) +| sizeHint(entry.value, depth - 1, java);
-            return size;
+/// Exact uncompressed size `write` or `writePayload` produces for a `Document` or `Tag`
+/// when it succeeds. Only nesting is checked, so the walk stays bounded.
+pub fn encodedLength(value: anytype, options: Options) error{DepthLimitExceeded}!usize {
+    const size = measure(value, options, true);
+    if (size == unencodable) return error.DepthLimitExceeded;
+    return size;
+}
+
+/// Sizes saturate, so nothing real reaches this.
+const unencodable = std.math.maxInt(usize);
+
+/// Inexact sizes never fall short, they just assume the widest network varints so
+/// arrays and lists cost nothing to measure.
+fn measure(value: anytype, options: Options, comptime exact: bool) usize {
+    return switch (options.format()) {
+        inline else => |format| switch (@TypeOf(value)) {
+            Document => 1 +| Encoder(format).stringSize(value.name) +| Encoder(format).payloadSize(options, value.root, 0, exact),
+            Tag => Encoder(format).payloadSize(options, value, 0, exact),
+            else => @compileError("expected a Document or Tag"),
         },
     };
 }
 
-/// Java strings can grow when written as modified UTF-8.
-fn stringHint(value: []const u8, java: bool) usize {
-    return 2 +| if (java and !utf8.isModifiedPlain(value)) utf8.modifiedLen(value) else value.len;
+fn varLen(value: u64) usize {
+    return if (value == 0) 1 else (64 - @as(usize, @clz(value)) + 6) / 7;
 }
 
-fn Encoder(comptime encoding: Encoding) type {
+fn zigzag(value: i64) u64 {
+    return @bitCast((value << 1) ^ (value >> 63));
+}
+
+fn Encoder(comptime format: Format) type {
     return struct {
         const Self = @This();
+
+        const encoding = format.encoding();
 
         const endian: std.builtin.Endian = if (encoding == .java) .big else .little;
         const varints = encoding == .bedrock_network;
@@ -103,6 +121,72 @@ fn Encoder(comptime encoding: Encoding) type {
         options: Options,
         written: usize = 0,
         names: unique_names.Checker = .{},
+
+        fn stringSize(value: []const u8) usize {
+            const transcoded = encoding == .java and !format.rawStrings() and !utf8.isModifiedPlain(value);
+            const len = if (transcoded) utf8.modifiedLen(value) else value.len;
+            return (if (varints) varLen(len) else 2) +| len;
+        }
+
+        fn lengthSize(len: usize) usize {
+            return if (varints) varLen(@as(u64, len) *| 2) else 4;
+        }
+
+        fn intSize(comptime T: type, value: T, comptime exact: bool) usize {
+            if (!varints) return @sizeOf(T);
+            return if (exact) varLen(zigzag(value)) else (@bitSizeOf(T) + 6) / 7;
+        }
+
+        fn payloadSize(options: Options, tag: Tag, depth: usize, comptime exact: bool) usize {
+            return switch (tag) {
+                .end => 0,
+                .byte => 1,
+                .short => 2,
+                .float => 4,
+                .double => 8,
+                .int => |value| intSize(i32, value, exact),
+                .long => |value| intSize(i64, value, exact),
+                .string => |value| stringSize(value),
+                .byte_array => |value| lengthSize(value.len) +| value.len,
+                inline .int_array, .long_array => |values| {
+                    const T = @TypeOf(values[0]);
+                    var size = lengthSize(values.len);
+                    if (!varints or !exact) return size +| values.len *| intSize(T, 0, false);
+
+                    for (values) |value| size +|= varLen(zigzag(value));
+                    return size;
+                },
+
+                .list => |value| {
+                    if (value.items.len != 0 and depth + 1 >= options.max_depth) return unencodable;
+
+                    var size = 1 +| lengthSize(value.items.len);
+                    const fixed_width = switch (value.element_type) {
+                        .byte, .short, .float, .double => true,
+                        .int, .long => !varints or !exact,
+                        else => false,
+                    };
+
+                    if (fixed_width and value.items.len != 0) {
+                        return size +| value.items.len *| payloadSize(options, value.items[0], depth + 1, exact);
+                    }
+
+                    for (value.items) |item| size +|= payloadSize(options, item, depth + 1, exact);
+                    return size;
+                },
+
+                .compound => |value| {
+                    if (value.entries.len != 0 and depth + 1 >= options.max_depth) return unencodable;
+
+                    var size: usize = 1;
+                    for (value.entries) |entry| {
+                        size +|= 1 +| stringSize(entry.name) +| payloadSize(options, entry.value, depth + 1, exact);
+                    }
+
+                    return size;
+                },
+            };
+        }
 
         fn document(self: *Self, value: Document) WriteError!void {
             const root_type = value.root.tagType();
@@ -171,8 +255,11 @@ fn Encoder(comptime encoding: Encoding) type {
         }
 
         fn string(self: *Self, value: []const u8) WriteError!void {
-            if (!utf8.validate(value)) return error.InvalidUtf8;
-            if (encoding == .java and !utf8.isModifiedPlain(value)) return self.modifiedString(value);
+            if (!format.rawStrings()) {
+                if (!utf8.validate(value)) return error.InvalidUtf8;
+                if (encoding == .java and !utf8.isModifiedPlain(value)) return self.modifiedString(value);
+            }
+
             if (value.len > self.options.max_string_bytes) return error.SizeLimitExceeded;
 
             if (varints) {
@@ -203,6 +290,7 @@ fn Encoder(comptime encoding: Encoding) type {
                 inline .byte, .short, .int, .long, .float, .double => |value, tag_type| try self.scalar(tag_type, value),
 
                 .byte_array => |value| {
+                    if (value.len > self.options.max_byte_array_length) return error.SizeLimitExceeded;
                     try self.length(value.len);
                     try self.bytes(value);
                 },

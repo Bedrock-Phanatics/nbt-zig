@@ -5,7 +5,7 @@ const native_endian = @import("builtin").cpu.arch.endian();
 const unique_names = @import("internal/unique_names.zig");
 const utf8 = @import("utf8.zig");
 const options_mod = @import("options.zig");
-const Encoding = options_mod.Encoding;
+const Format = options_mod.Format;
 const Options = options_mod.Options;
 const types = @import("types.zig");
 const Bits = types.Bits;
@@ -17,16 +17,36 @@ const TagType = types.TagType;
 
 pub const Error = types.CodecError || Allocator.Error;
 
+pub const Decoded = struct {
+    document: Document,
+    /// Bytes the document spans at the start of the input.
+    len: usize,
+};
+
+pub const DecodedPayload = struct {
+    tag: Tag,
+    len: usize,
+};
+
 /// Expects validated options.
-pub fn decode(allocator: Allocator, data: []const u8, options: Options) Error!Document {
-    return switch (options.encoding) {
-        inline else => |encoding| Decoder(encoding).document(allocator, data, options),
+pub fn decode(allocator: Allocator, data: []const u8, options: Options) Error!Decoded {
+    return switch (options.format()) {
+        inline else => |format| Decoder(format).document(allocator, data, options),
     };
 }
 
-fn Decoder(comptime encoding: Encoding) type {
+/// Decodes a headerless payload of a known type. Expects validated options.
+pub fn decodePayload(allocator: Allocator, data: []const u8, tag_type: TagType, options: Options) Error!DecodedPayload {
+    return switch (options.format()) {
+        inline else => |format| Decoder(format).headless(allocator, data, tag_type, options),
+    };
+}
+
+fn Decoder(comptime format: Format) type {
     return struct {
         const Self = @This();
+
+        const encoding = format.encoding();
 
         const endian: std.builtin.Endian = if (encoding == .java) .big else .little;
         const varints = encoding == .bedrock_network;
@@ -40,16 +60,18 @@ fn Decoder(comptime encoding: Encoding) type {
         entries: std.ArrayList(Entry) = .empty,
         names: unique_names.Checker = .{},
 
-        fn document(allocator: Allocator, data: []const u8, options: Options) Error!Document {
-            var self: Self = .{
-                .allocator = allocator,
-                .data = data,
-                .options = options,
-            };
-            defer {
-                self.entries.deinit(allocator);
-                self.names.deinit(allocator);
-            }
+        fn init(allocator: Allocator, data: []const u8, options: Options) Self {
+            return .{ .allocator = allocator, .data = data, .options = options };
+        }
+
+        fn deinit(self: *Self) void {
+            self.entries.deinit(self.allocator);
+            self.names.deinit(self.allocator);
+        }
+
+        fn document(allocator: Allocator, data: []const u8, options: Options) Error!Decoded {
+            var self: Self = .init(allocator, data, options);
+            defer self.deinit();
 
             const root_type = try self.tagType();
             if (root_type == .end) return error.InvalidRoot;
@@ -60,9 +82,23 @@ fn Decoder(comptime encoding: Encoding) type {
             var root = try self.payload(root_type, 0);
             errdefer root.deinit(allocator);
 
-            if (options.reject_trailing_bytes and self.offset != data.len) return error.TrailingData;
+            try self.finish();
+            return .{ .document = .{ .name = name, .root = root }, .len = self.offset };
+        }
 
-            return .{ .name = name, .root = root };
+        fn headless(allocator: Allocator, data: []const u8, tag_type: TagType, options: Options) Error!DecodedPayload {
+            var self: Self = .init(allocator, data, options);
+            defer self.deinit();
+
+            var tag = try self.payload(tag_type, 0);
+            errdefer tag.deinit(allocator);
+
+            try self.finish();
+            return .{ .tag = tag, .len = self.offset };
+        }
+
+        fn finish(self: *const Self) Error!void {
+            if (self.options.reject_trailing_bytes and self.offset != self.data.len) return error.TrailingData;
         }
 
         fn reserve(self: *Self, amount: usize) Error!void {
@@ -107,11 +143,15 @@ fn Decoder(comptime encoding: Encoding) type {
                 if (index == max_len - 1) {
                     // Also rejects a continuation bit on the final byte.
                     if (current >> last_bits != 0) return error.VarIntOverflow;
+                    if (current == 0 and self.options.reject_noncanonical_varints) return error.NonCanonicalVarInt;
                     return value | @as(T, current) << (7 * index);
                 }
 
                 value |= @as(T, current & 0x7f) << (7 * index);
-                if (current & 0x80 == 0) return value;
+                if (current & 0x80 == 0) {
+                    if (index != 0 and current == 0 and self.options.reject_noncanonical_varints) return error.NonCanonicalVarInt;
+                    return value;
+                }
             }
         }
 
@@ -150,6 +190,8 @@ fn Decoder(comptime encoding: Encoding) type {
             const encoded = try self.take(len);
             try self.reserve(len);
 
+            if (format.rawStrings()) return self.allocator.dupe(u8, encoded);
+
             if (encoding == .java) {
                 if (!utf8.isModifiedPlain(encoded) or !utf8.validate(encoded)) {
                     return utf8.decodeModified(self.allocator, encoded);
@@ -181,6 +223,7 @@ fn Decoder(comptime encoding: Encoding) type {
 
         fn array(self: *Self, comptime T: type) Error![]T {
             const len = try self.length();
+            if (T == u8 and len > self.options.max_byte_array_length) return error.SizeLimitExceeded;
             const size = std.math.mul(usize, len, @sizeOf(T)) catch return error.SizeLimitExceeded;
 
             try self.reserve(size);
@@ -297,8 +340,14 @@ fn Decoder(comptime encoding: Encoding) type {
                 try self.entries.append(self.allocator, .{ .name = name, .value = value });
             }
 
-            const fields = self.entries.items[start..];
-            try self.names.check(self.allocator, fields);
+            var fields = self.entries.items[start..];
+            switch (self.options.duplicate_names) {
+                .reject => try self.names.check(self.allocator, fields),
+                .keep_first => {
+                    fields.len = try self.names.keepFirst(self.allocator, fields);
+                    self.entries.shrinkRetainingCapacity(start + fields.len);
+                },
+            }
 
             const entries = try self.allocator.dupe(Entry, fields);
             self.entries.shrinkRetainingCapacity(start);

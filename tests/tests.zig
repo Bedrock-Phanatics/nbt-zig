@@ -3,6 +3,7 @@ const nbt = @import("nbt");
 
 test {
     _ = @import("interop.zig");
+    _ = @import("scan.zig");
 }
 
 fn ownedDocument(allocator: std.mem.Allocator) !nbt.Document {

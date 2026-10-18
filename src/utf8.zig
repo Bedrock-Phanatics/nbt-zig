@@ -40,6 +40,19 @@ pub fn decodeModified(allocator: Allocator, encoded: []const u8) (error{InvalidM
     const result = try allocator.alloc(u8, encoded.len);
     errdefer allocator.free(result);
 
+    const len = try transcodeModified(encoded, result);
+    if (len == result.len) return result;
+
+    return allocator.realloc(result, len);
+}
+
+pub fn validateModified(encoded: []const u8) bool {
+    _ = transcodeModified(encoded, null) catch return false;
+    return true;
+}
+
+/// Walks modified UTF-8 and writes standard UTF-8 to `out` when given.
+fn transcodeModified(encoded: []const u8, out: ?[]u8) error{InvalidModifiedUtf8}!usize {
     var len: usize = 0;
     var index: usize = 0;
     var pending_high: ?u16 = null;
@@ -51,21 +64,22 @@ pub fn decodeModified(allocator: Allocator, encoded: []const u8) (error{InvalidM
             if (unit < 0xdc00 or unit > 0xdfff) return error.InvalidModifiedUtf8;
 
             const scalar: u21 = @intCast(0x10000 + ((@as(u32, high) - 0xd800) << 10) + (unit - 0xdc00));
-            len += std.unicode.utf8Encode(scalar, result[len..][0..4]) catch unreachable;
+            if (out) |buffer| _ = std.unicode.utf8Encode(scalar, buffer[len..][0..4]) catch unreachable;
+            len += 4;
             pending_high = null;
         } else if (unit >= 0xd800 and unit <= 0xdbff) {
             pending_high = unit;
         } else {
             if (unit >= 0xdc00 and unit <= 0xdfff) return error.InvalidModifiedUtf8;
 
-            len += std.unicode.utf8Encode(unit, result[len..]) catch unreachable;
+            const width = std.unicode.utf8CodepointSequenceLength(unit) catch unreachable;
+            if (out) |buffer| _ = std.unicode.utf8Encode(unit, buffer[len..][0..width]) catch unreachable;
+            len += width;
         }
     }
 
     if (pending_high != null) return error.InvalidModifiedUtf8;
-    if (len == result.len) return result;
-
-    return allocator.realloc(result, len);
+    return len;
 }
 
 fn nextUnit(encoded: []const u8, index: *usize) error{InvalidModifiedUtf8}!u16 {

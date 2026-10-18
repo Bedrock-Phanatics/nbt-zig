@@ -445,3 +445,61 @@ pub fn expectAgreement(allocator: std.mem.Allocator, input: []const u8, options:
         else => try testing.expectError(err, scanned),
     }
 }
+
+test "network varint arrays of mixed widths round trip, scan and reject truncation" {
+    const allocator = testing.allocator;
+    var prng: std.Random.DefaultPrng = .init(0x7a7a);
+    const random = prng.random();
+
+    for ([_]usize{ 0, 1, 15, 16, 17, 31, 33, 100, 1000 }) |len| {
+        for (0..4) |pattern| {
+            const ints = try allocator.alloc(i32, len);
+            defer allocator.free(ints);
+            const longs = try allocator.alloc(i64, len);
+            defer allocator.free(longs);
+
+            for (ints, longs, 0..) |*int, *long, index| {
+                const small = random.intRangeAtMost(i32, -64, 63);
+                int.* = switch (pattern) {
+                    0 => small,
+                    1 => if (index % 17 == 3) random.int(i32) else small,
+                    2 => random.int(i32),
+                    else => if (index % 2 == 0) std.math.minInt(i32) else small,
+                };
+                long.* = if (pattern == 0) small else random.int(i64);
+            }
+
+            var root = nbt.builder.Compound.init(allocator);
+            defer root.deinit();
+            try addOwned(&root, "ints", try nbt.builder.intArray(allocator, ints));
+            try addOwned(&root, "longs", try nbt.builder.longArray(allocator, longs));
+            var tag = try root.finish();
+            var document = nbt.Document.init(allocator, "", tag) catch |err| {
+                tag.deinit(allocator);
+                return err;
+            };
+            defer document.deinit(allocator);
+
+            for (encodings) |options| {
+                const bytes = try nbt.serialize(allocator, document, options);
+                defer allocator.free(bytes);
+                try testing.expectEqual(bytes.len, try nbt.encodedLength(document, options));
+                try testing.expectEqual(bytes.len, try nbt.scanDocument(bytes, options));
+
+                var parsed = try nbt.parse(allocator, bytes, options);
+                defer parsed.deinit(allocator);
+                try testing.expect(document.eql(parsed));
+
+                var buffer: [16 * 1024]u8 = undefined;
+                var writer: std.Io.Writer = .fixed(&buffer);
+                try nbt.writeDocument(allocator, &writer, document, options);
+                try testing.expectEqualSlices(u8, bytes, writer.buffered());
+
+                if (len <= 33) for (0..bytes.len) |end| {
+                    try testing.expectError(error.UnexpectedEndOfInput, nbt.scanDocument(bytes[0..end], options));
+                    try testing.expectError(error.UnexpectedEndOfInput, nbt.parse(allocator, bytes[0..end], options));
+                };
+            }
+        }
+    }
+}

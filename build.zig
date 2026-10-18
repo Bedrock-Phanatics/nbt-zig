@@ -72,6 +72,7 @@ pub fn build(b: *std.Build) void {
     const fuzz_step = b.step("fuzz", "Run deterministic decoder fuzz cases");
     fuzz_step.dependOn(&run_fuzz.step);
     const run_bench = b.addRunArtifact(bench);
+    run_bench.addPassthruArgs();
     const bench_step = b.step("bench", "Run reproducible ReleaseFast benchmarks");
     bench_step.dependOn(&run_bench.step);
 }

@@ -14,6 +14,9 @@ const Case = struct {
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
+    // An optional argument only runs cases whose name contains it.
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    const filter: []const u8 = if (args.len > 1) args[1] else "";
     std.debug.print("nbt benchmark (Zig 0.17, ReleaseFast; median of {d} samples)\n", .{sample_count});
     std.debug.print("MiB/s counts uncompressed NBT bytes; arena = decode into a reused ArenaAllocator\n", .{});
     inline for ([_]Case{
@@ -38,7 +41,11 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "gzip-byte-array", .shape = .byte_array, .payload_size = 64 * 1024, .iterations = 100, .options = .{ .compression = .gzip } },
         .{ .name = "zlib-byte-array", .shape = .byte_array, .payload_size = 64 * 1024, .iterations = 100, .options = .{ .compression = .zlib } },
         .{ .name = "large-byte-array", .shape = .byte_array, .payload_size = 4 * 1024 * 1024, .iterations = 10, .options = .java },
-    }) |case| try runCase(allocator, init.io, case);
+    }) |case| {
+        if (std.mem.indexOf(u8, case.name, filter) != null) try runCase(allocator, init.io, case);
+    }
+
+    if (filter.len != 0) return;
     try runMalformed(allocator, init.io);
     try profileCompression(allocator, init.io);
 }

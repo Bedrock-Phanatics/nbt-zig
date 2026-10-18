@@ -106,6 +106,10 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case) !void {
     defer allocator.free(logical);
     const buffer = try allocator.alloc(u8, encoded.len);
     defer allocator.free(buffer);
+
+    // Check the outputs once so a broken path cannot post a fast time.
+    if (case.options.compression == .none and try nbt.scanDocument(encoded, case.options) != encoded.len) return error.ScanMismatch;
+    if (try nbt.encodedLength(document, logical_options) != logical.len) return error.LengthMismatch;
     var arena: std.heap.ArenaAllocator = .init(allocator);
     defer arena.deinit();
 
@@ -131,7 +135,10 @@ fn runCase(allocator: std.mem.Allocator, io: std.Io, case: Case) !void {
     if (document.root == .compound and document.root.compound.entries.len != 0) {
         std.debug.print(", lookup {d} ns/key", .{results[@backingInt(Op.lookup)] / document.root.compound.entries.len});
     }
-    std.debug.print("\n", .{});
+    if (case.options.compression == .none) {
+        std.debug.print(", scan {d} ns/op ({d:.1} MiB/s)", .{ results[@backingInt(Op.scan)], throughput(logical.len, results[@backingInt(Op.scan)]) });
+    }
+    std.debug.print(", size {d} ns/op\n", .{results[@backingInt(Op.size)]});
 
     var decode_alloc: CountingAllocator = .{ .child = allocator };
     var parsed = try nbt.parse(decode_alloc.allocator(), encoded, case.options);
@@ -156,6 +163,8 @@ const Op = enum {
     write,
     walk,
     lookup,
+    scan,
+    size,
     const count = std.enums.values(Op).len;
 };
 
@@ -192,6 +201,8 @@ fn measure(
                 std.mem.doNotOptimizeAway(document.root.compound.get(entry.name));
             }
         },
+        .scan => if (options.compression == .none) std.mem.doNotOptimizeAway(try nbt.scanDocument(encoded, options)),
+        .size => std.mem.doNotOptimizeAway(try nbt.encodedLength(document.*, options)),
     };
     return @intCast(start.durationTo(std.Io.Clock.awake.now(io)).nanoseconds);
 }

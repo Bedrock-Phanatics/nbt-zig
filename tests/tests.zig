@@ -991,3 +991,77 @@ test "nonminimal network varints are accepted and written canonically" {
     defer allocator.free(encoded);
     try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0 }, encoded);
 }
+
+test "compressed round trips fit in a small thread stack" {
+    var result: anyerror!void = {};
+    const thread = try std.Thread.spawn(.{ .stack_size = 128 * 1024 }, smallStackRoundTrip, .{&result});
+    thread.join();
+    try result;
+}
+
+fn smallStackRoundTrip(result: *anyerror!void) void {
+    result.* = smallStackScenario(std.testing.allocator);
+}
+
+fn smallStackScenario(allocator: std.mem.Allocator) !void {
+    var document = try ownedDocument(allocator);
+    defer document.deinit(allocator);
+    inline for (.{ nbt.Compression.gzip, nbt.Compression.zlib }) |kind| {
+        const options: nbt.Options = .{ .compression = kind };
+        const bytes = try nbt.serialize(allocator, document, options);
+        defer allocator.free(bytes);
+        var parsed = try nbt.parse(allocator, bytes, options);
+        defer parsed.deinit(allocator);
+        try std.testing.expect(document.eql(parsed));
+    }
+}
+
+test "gzip footers match the standard library CRC for every tail length" {
+    const allocator = std.testing.allocator;
+    var payload: [300]u8 = undefined;
+    for (&payload, 0..) |*byte, index| byte.* = @truncate(index *% 151 +% 7);
+    for (0..payload.len) |len| {
+        var document = try nbt.Document.init(allocator, "crc", try nbt.builder.byteArray(allocator, payload[0..len]));
+        defer document.deinit(allocator);
+        const plain = try nbt.serialize(allocator, document, .java);
+        defer allocator.free(plain);
+        const gzip = try nbt.serialize(allocator, document, .{ .compression = .gzip });
+        defer allocator.free(gzip);
+        try std.testing.expectEqual(std.hash.Crc32.hash(plain), std.mem.readInt(u32, gzip[gzip.len - 8 ..][0..4], .little));
+        try std.testing.expectEqual(@as(u32, @intCast(plain.len)), std.mem.readInt(u32, gzip[gzip.len - 4 ..][0..4], .little));
+    }
+}
+
+test "Java strings without NUL or supplementary characters keep their UTF-8 bytes" {
+    const allocator = std.testing.allocator;
+    const text = "héllø 中文 ascii and a longer tail to cross vector lanes";
+    var document = try nbt.Document.init(allocator, "", try nbt.builder.string(allocator, text));
+    defer document.deinit(allocator);
+    const bytes = try nbt.serialize(allocator, document, .java);
+    defer allocator.free(bytes);
+    try std.testing.expectEqual(@as(u16, text.len), std.mem.readInt(u16, bytes[3..5], .big));
+    try std.testing.expectEqualStrings(text, bytes[5..]);
+    var parsed = try nbt.parse(allocator, bytes, .java);
+    defer parsed.deinit(allocator);
+    try std.testing.expect(document.eql(parsed));
+    try std.testing.expectError(error.InvalidModifiedUtf8, nbt.parse(allocator, &.{ 8, 0, 0, 0, 4, 0xf0, 0x9f, 0x98, 0x80 }, .java));
+}
+
+test "compound builder finds duplicates past its index threshold and is reusable" {
+    const allocator = std.testing.allocator;
+    var builder = nbt.builder.Compound.init(allocator);
+    defer builder.deinit();
+    for (0..2) |_| {
+        for (0..40) |index| {
+            var name: [16]u8 = undefined;
+            try builder.add(try std.fmt.bufPrint(&name, "key{d}", .{index}), .{ .int = @intCast(index) });
+        }
+        try std.testing.expect(builder.contains("key3"));
+        try std.testing.expectError(error.DuplicateName, builder.add("key3", .{ .int = 0 }));
+        try std.testing.expectError(error.DuplicateName, builder.add("key39", .{ .int = 0 }));
+        var root = try builder.finish();
+        defer root.deinit(allocator);
+        try std.testing.expectEqual(@as(usize, 40), root.compound.entries.len);
+        try std.testing.expect(!builder.contains("key3"));
+    }
+}

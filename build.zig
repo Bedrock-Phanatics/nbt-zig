@@ -33,19 +33,20 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseFast,
     });
+    const bench_imports: []const std.Build.Module.Import = &.{
+        .{ .name = "nbt", .module = bench_nbt },
+        .{ .name = "fixtures", .module = b.createModule(.{
+            .root_source_file = b.path("tests/fixtures/root.zig"),
+            .imports = &.{.{ .name = "nbt", .module = bench_nbt }},
+        }) },
+    };
     const bench = b.addExecutable(.{
         .name = "nbt-bench",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/bench/benchmark.zig"),
             .target = target,
             .optimize = .ReleaseFast,
-            .imports = &.{
-                .{ .name = "nbt", .module = bench_nbt },
-                .{ .name = "fixtures", .module = b.createModule(.{
-                    .root_source_file = b.path("tests/fixtures/root.zig"),
-                    .imports = &.{.{ .name = "nbt", .module = bench_nbt }},
-                }) },
-            },
+            .imports = bench_imports,
         }),
     });
     test_step.dependOn(&bench.step);
@@ -72,6 +73,20 @@ pub fn build(b: *std.Build) void {
     const run_fuzz = b.addRunArtifact(fuzz);
     const fuzz_step = b.step("fuzz", "Run deterministic decoder fuzz cases");
     fuzz_step.dependOn(&run_fuzz.step);
+    const compare = b.addExecutable(.{
+        .name = "nbt-compare",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/bench/compare.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+            .imports = bench_imports,
+        }),
+    });
+    test_step.dependOn(&compare.step);
+    const run_compare = b.addRunArtifact(compare);
+    run_compare.addPassthruArgs();
+    b.step("compare", "Run the Zig half of the PHP comparison").dependOn(&run_compare.step);
+
     const run_bench = b.addRunArtifact(bench);
     run_bench.addPassthruArgs();
     const bench_step = b.step("bench", "Run reproducible ReleaseFast benchmarks");

@@ -503,3 +503,37 @@ test "network varint arrays of mixed widths round trip, scan and reject truncati
         }
     }
 }
+
+test "the deepest documents decode, encode and free on a modest thread stack" {
+    // Measured on Linux at about 112 KiB in optimized builds, unoptimized frames are far larger.
+    const stack_size: usize = if (@import("builtin").mode == .debug) 4 * 1024 * 1024 else 256 * 1024;
+    var result: anyerror!void = {};
+    const thread = try std.Thread.spawn(.{ .stack_size = stack_size }, deepTree, .{&result});
+    thread.join();
+    try result;
+}
+
+fn deepTree(result: *anyerror!void) void {
+    result.* = deepTreeScenario(testing.allocator);
+}
+
+fn deepTreeScenario(allocator: std.mem.Allocator) !void {
+    const depth = nbt.Options.max_supported_depth;
+    var compounds: [depth * 4]u8 = undefined;
+    for (0..depth) |index| compounds[index * 3 ..][0..3].* = .{ 10, 0, 0 };
+    @memset(compounds[depth * 3 ..], 0);
+
+    var lists: [3 + (depth - 1) * 5 + 5]u8 = undefined;
+    lists[0..3].* = .{ 9, 0, 0 };
+    for (0..depth - 1) |index| lists[3 + index * 5 ..][0..5].* = .{ 9, 0, 0, 0, 1 };
+    lists[3 + (depth - 1) * 5 ..][0..5].* = .{ 1, 0, 0, 0, 0 };
+
+    for ([_][]const u8{ &compounds, &lists }) |wire| {
+        var document = try nbt.parse(allocator, wire, .java);
+        defer document.deinit(allocator);
+        try testing.expect(document.eql(document));
+        const bytes = try nbt.serialize(allocator, document, .java);
+        defer allocator.free(bytes);
+        try testing.expectEqualSlices(u8, wire, bytes);
+    }
+}

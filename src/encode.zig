@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const native_endian = @import("builtin").cpu.arch.endian();
 
 const BoundedWriter = @import("internal/BoundedWriter.zig");
+const endian_swap = @import("internal/endian.zig");
 const unique_names = @import("internal/unique_names.zig");
 const utf8 = @import("utf8.zig");
 const options_mod = @import("options.zig");
@@ -213,6 +214,19 @@ fn Encoder(comptime format: Format) type {
             self.written = end;
         }
 
+        /// Claims `len` bytes of the writer's spare capacity to fill in place, if they fit.
+        fn direct(self: *Self, len: usize) ?[]u8 {
+            const w = self.writer;
+            const end = std.math.add(usize, self.written, len) catch return null;
+            if (end > self.options.max_output_bytes or w.buffer.len - w.end < len) return null;
+
+            defer {
+                w.end += len;
+                self.written = end;
+            }
+            return w.buffer[w.end..][0..len];
+        }
+
         fn byte(self: *Self, value: u8) WriteError!void {
             try self.bytes(&.{value});
         }
@@ -338,17 +352,19 @@ fn Encoder(comptime format: Format) type {
                 try self.zigzags(T, values);
             } else if (endian == native_endian) {
                 try self.bytes(std.mem.sliceAsBytes(values));
+            } else if (self.direct(values.len * @sizeOf(T))) |dest| {
+                @memcpy(dest, std.mem.sliceAsBytes(values));
+                endian_swap.swapAll(T, @ptrCast(dest));
             } else {
-                var buffer: [256]u8 = undefined;
+                var buffer: [256 / @sizeOf(T)]T = undefined;
                 var rest = values;
 
                 while (rest.len != 0) {
-                    const chunk = rest[0..@min(rest.len, buffer.len / @sizeOf(T))];
-                    for (chunk, 0..) |value, index| {
-                        std.mem.writeInt(T, buffer[index * @sizeOf(T) ..][0..@sizeOf(T)], value, endian);
-                    }
+                    const chunk = buffer[0..@min(rest.len, buffer.len)];
+                    @memcpy(chunk, rest[0..chunk.len]);
+                    endian_swap.swapAll(T, chunk);
 
-                    try self.bytes(buffer[0 .. chunk.len * @sizeOf(T)]);
+                    try self.bytes(std.mem.sliceAsBytes(chunk));
                     rest = rest[chunk.len..];
                 }
             }

@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const native_endian = @import("builtin").cpu.arch.endian();
 
+const endian_swap = @import("internal/endian.zig");
 const unique_names = @import("internal/unique_names.zig");
 const utf8 = @import("utf8.zig");
 const options_mod = @import("options.zig");
@@ -265,13 +266,8 @@ fn Decoder(comptime format: Format) type {
             } else {
                 const input = try self.take(size);
 
-                if (T == u8 or endian == native_endian) {
-                    @memcpy(std.mem.sliceAsBytes(result), input);
-                } else {
-                    for (result, 0..) |*item, index| {
-                        item.* = std.mem.readInt(T, input[index * @sizeOf(T) ..][0..@sizeOf(T)], endian);
-                    }
-                }
+                @memcpy(std.mem.sliceAsBytes(result), input);
+                if (T != u8 and endian != native_endian) endian_swap.swapAll(T, result);
             }
 
             return result;

@@ -94,6 +94,8 @@ byte array lengths, input, decompressed and output sizes, and the bytes a parse 
 Malformed, truncated and oversized input fails with an error, never a crash. Parsing and
 serializing recurse on the native stack, about 112 KiB at depth 512 in optimized builds and
 several MiB in Debug, so lower `max_depth` for small thread stacks. The scanner needs 16 KiB.
+Compressing also places std's roughly 230 KB deflate state on the stack, so compressed
+serialization needs about 256 KiB in optimized builds. Decompression needs little.
 
 ## Development
 

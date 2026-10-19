@@ -993,28 +993,39 @@ test "nonminimal network varints are accepted and written canonically" {
     try std.testing.expectEqualSlices(u8, &.{ 3, 0, 0 }, encoded);
 }
 
-test "compressed round trips fit in a small thread stack" {
-    var result: anyerror!void = {};
-    const thread = try std.Thread.spawn(.{ .stack_size = 128 * 1024 }, smallStackRoundTrip, .{&result});
-    thread.join();
-    try result;
-}
-
-fn smallStackRoundTrip(result: *anyerror!void) void {
-    result.* = smallStackScenario(std.testing.allocator);
-}
-
-fn smallStackScenario(allocator: std.mem.Allocator) !void {
+test "compressed documents decode on a small stack and encode on a modest one" {
+    const allocator = std.testing.allocator;
     var document = try ownedDocument(allocator);
     defer document.deinit(allocator);
+
     inline for (.{ nbt.Compression.gzip, nbt.Compression.zlib }) |kind| {
         const options: nbt.Options = .{ .compression = kind };
-        const bytes = try nbt.serialize(allocator, document, options);
-        defer allocator.free(bytes);
-        var parsed = try nbt.parse(allocator, bytes, options);
-        defer parsed.deinit(allocator);
-        try std.testing.expect(document.eql(parsed));
+        var bytes: anyerror![]u8 = error.NotRun;
+        // std's deflate builds about 230 KB of state on the caller's stack.
+        const encode_stack: usize = if (@import("builtin").mode == .debug) 4 * 1024 * 1024 else 512 * 1024;
+        const encoder = try std.Thread.spawn(.{ .stack_size = encode_stack }, compressOnThread, .{ allocator, &document, options, &bytes });
+        encoder.join();
+        const encoded = try bytes;
+        defer allocator.free(encoded);
+
+        var result: anyerror!void = {};
+        const decoder = try std.Thread.spawn(.{ .stack_size = 64 * 1024 }, decompressOnThread, .{ allocator, &document, encoded, options, &result });
+        decoder.join();
+        try result;
     }
+}
+
+fn compressOnThread(allocator: std.mem.Allocator, document: *const nbt.Document, options: nbt.Options, out: *anyerror![]u8) void {
+    out.* = nbt.serialize(allocator, document.*, options);
+}
+
+fn decompressOnThread(allocator: std.mem.Allocator, document: *const nbt.Document, bytes: []const u8, options: nbt.Options, result: *anyerror!void) void {
+    var parsed = nbt.parse(allocator, bytes, options) catch |err| {
+        result.* = err;
+        return;
+    };
+    defer parsed.deinit(allocator);
+    result.* = if (document.eql(parsed)) {} else error.RoundTripMismatch;
 }
 
 test "gzip footers match the standard library CRC for every tail length" {

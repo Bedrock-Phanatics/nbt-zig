@@ -107,6 +107,9 @@ Smallest thread stack, on Linux, that handled a 512-deep document of nested comp
 | deinit | 48 KiB | 64 KiB | 384 KiB |
 | eql | 112 KiB | 112 KiB | 1 MiB |
 
+Serializing with gzip or zlib needs 192 KiB in ReleaseFast, 256 KiB in ReleaseSafe and 768 KiB
+in Debug for a small document, because std's deflate state is built on the caller's stack.
+
 ## Reproducing
 
 ```sh

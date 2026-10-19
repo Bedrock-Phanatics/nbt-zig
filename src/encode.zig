@@ -215,6 +215,12 @@ fn Encoder(comptime format: Format) type {
         }
 
         /// Claims `len` bytes of the writer's spare capacity to fill in place, if they fit.
+        /// Writable capacity that is also within the output limit.
+        fn spare(self: *Self) []u8 {
+            const w = self.writer;
+            return w.buffer[w.end..][0..@min(w.buffer.len - w.end, self.options.max_output_bytes -| self.written)];
+        }
+
         fn direct(self: *Self, len: usize) ?[]u8 {
             const w = self.writer;
             const end = std.math.add(usize, self.written, len) catch return null;
@@ -347,8 +353,29 @@ fn Encoder(comptime format: Format) type {
 
                 // A miss means wider values, so take the next batch one by one before checking again.
                 const batch = rest[0..@min(rest.len, lanes)];
-                for (batch) |value| try self.scalar(if (T == i32) .int else .long, value);
                 rest = rest[batch.len..];
+
+                // With room for the widest encoding of the batch, write it in place with one check.
+                const max_len = (@bitSizeOf(T) + 6) / 7;
+                const room = self.spare();
+                if (room.len >= batch.len * max_len) {
+                    var len: usize = 0;
+                    for (batch) |value| {
+                        var unsigned = (@as(Unsigned, @bitCast(value)) << 1) ^ @as(Unsigned, @bitCast(value >> (@bitSizeOf(T) - 1)));
+                        while (unsigned >= 0x80) : (unsigned >>= 7) {
+                            room[len] = @truncate(unsigned | 0x80);
+                            len += 1;
+                        }
+                        room[len] = @truncate(unsigned);
+                        len += 1;
+                    }
+
+                    self.writer.end += len;
+                    self.written += len;
+                    continue;
+                }
+
+                for (batch) |value| try self.scalar(if (T == i32) .int else .long, value);
             }
         }
 

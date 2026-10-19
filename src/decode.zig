@@ -187,7 +187,44 @@ fn Decoder(comptime format: Format) type {
 
                 // A miss means wider values, so take the next batch one by one before checking again.
                 const end = @min(out.len, index + lanes);
+
+                // When even the widest encoding of the batch is in bounds, skip per-byte checks.
+                if (self.remaining() >= (end - index) * ((@bitSizeOf(T) + 6) / 7)) {
+                    var offset = self.offset;
+                    defer self.offset = offset;
+
+                    while (index < end) : (index += 1) {
+                        const value = try unchecked(Unsigned, self.data, &offset, self.options.reject_noncanonical_varints);
+                        out[index] = @bitCast((value >> 1) ^ (0 -% (value & 1)));
+                    }
+                    continue;
+                }
+
                 while (index < end) : (index += 1) out[index] = try self.zigzag(T);
+            }
+        }
+
+        /// Reads a varint the caller has already bounds checked.
+        inline fn unchecked(comptime T: type, data: []const u8, offset: *usize, reject_noncanonical: bool) Error!T {
+            const max_len = (@bitSizeOf(T) + 6) / 7;
+            const last_bits = @bitSizeOf(T) - 7 * (max_len - 1);
+            var value: T = 0;
+
+            inline for (0..max_len) |index| {
+                const current = data[offset.*];
+                offset.* += 1;
+
+                if (index == max_len - 1) {
+                    if (current >> last_bits != 0) return error.VarIntOverflow;
+                    if (current == 0 and reject_noncanonical) return error.NonCanonicalVarInt;
+                    return value | @as(T, current) << (7 * index);
+                }
+
+                value |= @as(T, current & 0x7f) << (7 * index);
+                if (current & 0x80 == 0) {
+                    if (index != 0 and current == 0 and reject_noncanonical) return error.NonCanonicalVarInt;
+                    return value;
+                }
             }
         }
 

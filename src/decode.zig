@@ -80,7 +80,8 @@ fn Decoder(comptime format: Format) type {
             const name = try self.string();
             errdefer allocator.free(name);
 
-            var root = try self.payload(root_type, 0);
+            var root: Tag = undefined;
+            try self.payload(root_type, 0, &root);
             errdefer root.deinit(allocator);
 
             try self.finish();
@@ -91,7 +92,8 @@ fn Decoder(comptime format: Format) type {
             var self: Self = .init(allocator, data, options);
             defer self.deinit();
 
-            var tag = try self.payload(tag_type, 0);
+            var tag: Tag = undefined;
+            try self.payload(tag_type, 0, &tag);
             errdefer tag.deinit(allocator);
 
             try self.finish();
@@ -230,21 +232,31 @@ fn Decoder(comptime format: Format) type {
             return self.allocator.dupe(u8, encoded);
         }
 
-        fn payload(self: *Self, tag_type: TagType, depth: usize) Error!Tag {
-            return switch (tag_type) {
-                .end => error.InvalidTag,
-                .byte => .{ .byte = try self.scalar(.byte) },
-                .short => .{ .short = try self.scalar(.short) },
-                .int => .{ .int = try self.scalar(.int) },
-                .long => .{ .long = try self.scalar(.long) },
-                .float => .{ .float = try self.scalar(.float) },
-                .double => .{ .double = try self.scalar(.double) },
+        /// Every nesting level passes through here, so results go straight to `out`
+        /// rather than through temporaries that would grow each stack frame. `out` is only
+        /// written on success.
+        fn payload(self: *Self, tag_type: TagType, depth: usize, out: *Tag) Error!void {
+            switch (tag_type) {
+                .end => return error.InvalidTag,
+                .byte => out.* = .{ .byte = try self.scalar(.byte) },
+                .short => out.* = .{ .short = try self.scalar(.short) },
+                .int => out.* = .{ .int = try self.scalar(.int) },
+                .long => out.* = .{ .long = try self.scalar(.long) },
+                .float => out.* = .{ .float = try self.scalar(.float) },
+                .double => out.* = .{ .double = try self.scalar(.double) },
+                inline .byte_array, .string, .int_array, .long_array => |owned_type| try self.owned(owned_type, out),
+                .list => try self.list(depth + 1, out),
+                .compound => try self.compound(depth + 1, out),
+            }
+        }
+
+        noinline fn owned(self: *Self, comptime tag_type: TagType, out: *Tag) Error!void {
+            out.* = switch (tag_type) {
                 .byte_array => .{ .byte_array = try self.array(u8) },
                 .string => .{ .string = try self.string() },
-                .list => try self.list(depth + 1),
-                .compound => try self.compound(depth + 1),
                 .int_array => .{ .int_array = try self.array(i32) },
                 .long_array => .{ .long_array = try self.array(i64) },
+                else => comptime unreachable,
             };
         }
 
@@ -287,7 +299,7 @@ fn Decoder(comptime format: Format) type {
             };
         }
 
-        fn list(self: *Self, depth: usize) Error!Tag {
+        noinline fn list(self: *Self, depth: usize, out: *Tag) Error!void {
             const element_type = try self.tagType();
             const len = try self.length();
 
@@ -326,20 +338,17 @@ fn Decoder(comptime format: Format) type {
                 },
 
                 else => while (initialized < len) : (initialized += 1) {
-                    items[initialized] = try self.payload(element_type, depth);
+                    try self.payload(element_type, depth, &items[initialized]);
                 },
             }
 
-            return .{ .list = .{ .element_type = element_type, .items = items } };
+            out.* = .{ .list = .{ .element_type = element_type, .items = items } };
         }
 
-        fn compound(self: *Self, depth: usize) Error!Tag {
+        noinline fn compound(self: *Self, depth: usize, out: *Tag) Error!void {
             const start = self.entries.items.len;
 
-            errdefer {
-                for (self.entries.items[start..]) |*entry| entry.deinit(self.allocator);
-                self.entries.shrinkRetainingCapacity(start);
-            }
+            errdefer self.dropEntries(start);
 
             while (true) {
                 const tag_type = try self.tagType();
@@ -354,14 +363,37 @@ fn Decoder(comptime format: Format) type {
                 try self.reserve(@sizeOf(Entry) * 4);
 
                 const name = try self.string();
-                errdefer self.allocator.free(name);
+                var value: Tag = undefined;
+                self.payload(tag_type, depth, &value) catch |err| {
+                    self.allocator.free(name);
+                    return err;
+                };
 
-                var value = try self.payload(tag_type, depth);
-                errdefer value.deinit(self.allocator);
-
-                try self.entries.append(self.allocator, .{ .name = name, .value = value });
+                try self.pushEntry(name, value);
             }
 
+            out.* = try self.closeCompound(start);
+        }
+
+        // The helpers below stay out of line so every level of nesting keeps a small frame.
+
+        noinline fn dropEntries(self: *Self, start: usize) void {
+            for (self.entries.items[start..]) |*entry| entry.deinit(self.allocator);
+            self.entries.shrinkRetainingCapacity(start);
+        }
+
+        /// Takes `name` and `value` even when it fails.
+        noinline fn pushEntry(self: *Self, name: []u8, value: Tag) Error!void {
+            self.entries.append(self.allocator, .{ .name = name, .value = value }) catch |err| {
+                var entry: Entry = .{ .name = name, .value = value };
+                entry.deinit(self.allocator);
+                return err;
+            };
+        }
+
+        /// Out of line so its hashing does not bloat every level of the recursion. On error
+        /// the caller still frees the entries from `start` on.
+        noinline fn closeCompound(self: *Self, start: usize) Error!Tag {
             var fields = self.entries.items[start..];
             switch (self.options.duplicate_names) {
                 .reject => try self.names.check(self.allocator, fields),

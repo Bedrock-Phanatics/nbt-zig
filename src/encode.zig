@@ -72,7 +72,7 @@ pub fn writePayload(allocator: Allocator, writer: *std.Io.Writer, tag: Tag, opti
             var encoder: Encoder(format) = .{ .allocator = allocator, .writer = writer, .options = options };
             defer encoder.names.deinit(allocator);
 
-            try encoder.payload(tag, 0);
+            try encoder.payload(&tag, 0);
         },
     }
 }
@@ -195,7 +195,7 @@ fn Encoder(comptime format: Format) type {
 
             try self.byte(@backingInt(root_type));
             try self.string(value.name);
-            try self.payload(value.root, 0);
+            try self.payload(&value.root, 0);
         }
 
         /// Inline so the many tiny fixed-size writes become plain stores.
@@ -298,22 +298,29 @@ fn Encoder(comptime format: Format) type {
             while (iterator.nextCodepoint()) |codepoint| try self.bytes(utf8.encodeModified(codepoint, &buffer));
         }
 
-        fn payload(self: *Self, tag: Tag, depth: usize) WriteError!void {
-            switch (tag) {
+        /// Every nesting level passes through here, so containers and owned values are
+        /// handled out of line to keep this frame small.
+        fn payload(self: *Self, tag: *const Tag, depth: usize) WriteError!void {
+            switch (tag.*) {
                 .end => return error.InvalidTag,
                 inline .byte, .short, .int, .long, .float, .double => |value, tag_type| try self.scalar(tag_type, value),
+                .byte_array, .string, .int_array, .long_array => try self.owned(tag),
+                .list => |*value| try self.list(value, depth),
+                .compound => |*value| try self.compound(value, depth),
+            }
+        }
 
+        noinline fn owned(self: *Self, tag: *const Tag) WriteError!void {
+            switch (tag.*) {
                 .byte_array => |value| {
                     if (value.len > self.options.max_byte_array_length) return error.SizeLimitExceeded;
                     try self.length(value.len);
                     try self.bytes(value);
                 },
-
                 .string => |value| try self.string(value),
-                .list => |value| try self.list(value, depth),
-                .compound => |value| try self.compound(value, depth),
                 .int_array => |value| try self.array(i32, value),
                 .long_array => |value| try self.array(i64, value),
+                else => unreachable,
             }
         }
 
@@ -370,7 +377,7 @@ fn Encoder(comptime format: Format) type {
             }
         }
 
-        fn list(self: *Self, value: List, depth: usize) WriteError!void {
+        noinline fn list(self: *Self, value: *const List, depth: usize) WriteError!void {
             const element_type = value.element_type;
 
             if (element_type == .end and value.items.len != 0) return error.InvalidListType;
@@ -380,43 +387,45 @@ fn Encoder(comptime format: Format) type {
             try self.length(value.items.len);
 
             switch (element_type) {
-                inline .byte, .short, .int, .long, .float, .double => |scalar_type| {
-                    const T = Payload(scalar_type);
-
-                    if (varints and (T == i32 or T == i64)) {
-                        for (value.items) |item| {
-                            if (item.tagType() != scalar_type) return error.TypeMismatch;
-                            try self.scalar(scalar_type, @field(item, @tagName(scalar_type)));
-                        }
-
-                        return;
-                    }
-
-                    var buffer: [256]u8 = undefined;
-                    var rest = value.items;
-
-                    while (rest.len != 0) {
-                        const chunk = rest[0..@min(rest.len, buffer.len / @sizeOf(T))];
-                        for (chunk, 0..) |item, index| {
-                            if (item.tagType() != scalar_type) return error.TypeMismatch;
-
-                            const bits: Bits(scalar_type) = @bitCast(@field(item, @tagName(scalar_type)));
-                            std.mem.writeInt(Bits(scalar_type), buffer[index * @sizeOf(T) ..][0..@sizeOf(T)], bits, endian);
-                        }
-
-                        try self.bytes(buffer[0 .. chunk.len * @sizeOf(T)]);
-                        rest = rest[chunk.len..];
-                    }
-                },
-
-                else => for (value.items) |item| {
+                inline .byte, .short, .int, .long, .float, .double => |scalar_type| try self.scalars(scalar_type, value.items),
+                else => for (value.items) |*item| {
                     if (item.tagType() != element_type) return error.TypeMismatch;
                     try self.payload(item, depth + 1);
                 },
             }
         }
 
-        fn compound(self: *Self, value: Compound, depth: usize) WriteError!void {
+        /// Out of line, its batch buffer would otherwise sit in every nested list's frame.
+        noinline fn scalars(self: *Self, comptime scalar_type: TagType, items: []const Tag) WriteError!void {
+            const T = Payload(scalar_type);
+
+            if (varints and (T == i32 or T == i64)) {
+                for (items) |item| {
+                    if (item.tagType() != scalar_type) return error.TypeMismatch;
+                    try self.scalar(scalar_type, @field(item, @tagName(scalar_type)));
+                }
+
+                return;
+            }
+
+            var buffer: [256]u8 = undefined;
+            var rest = items;
+
+            while (rest.len != 0) {
+                const chunk = rest[0..@min(rest.len, buffer.len / @sizeOf(T))];
+                for (chunk, 0..) |item, index| {
+                    if (item.tagType() != scalar_type) return error.TypeMismatch;
+
+                    const bits: Bits(scalar_type) = @bitCast(@field(item, @tagName(scalar_type)));
+                    std.mem.writeInt(Bits(scalar_type), buffer[index * @sizeOf(T) ..][0..@sizeOf(T)], bits, endian);
+                }
+
+                try self.bytes(buffer[0 .. chunk.len * @sizeOf(T)]);
+                rest = rest[chunk.len..];
+            }
+        }
+
+        noinline fn compound(self: *Self, value: *const Compound, depth: usize) WriteError!void {
             const entries = value.entries;
 
             if (entries.len > self.options.max_compound_entries or entries.len > self.options.max_collection_length) {
@@ -431,13 +440,13 @@ fn Encoder(comptime format: Format) type {
 
             try self.names.check(self.allocator, entries);
 
-            for (entries) |entry| {
+            for (entries) |*entry| {
                 const tag_type = entry.value.tagType();
                 if (tag_type == .end) return error.InvalidTag;
 
                 try self.byte(@backingInt(tag_type));
                 try self.string(entry.name);
-                try self.payload(entry.value, depth + 1);
+                try self.payload(&entry.value, depth + 1);
             }
 
             try self.byte(@backingInt(TagType.end));

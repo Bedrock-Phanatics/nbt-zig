@@ -31,10 +31,11 @@ Set these for PocketMine-compatible results:
 * `duplicate_names = .keep_first`. PocketMine keeps the first value of a repeated name, since
   old worlds contain such compounds.
 * `max_string_bytes = 32767`, PocketMine's string limit.
-* `max_depth`: PocketMine counts compounds and lists below the root and treats 0 as unlimited.
-  nbt-zig counts the root too and allows at most 512, so use `$maxDepth + 1`, or 512 for 0.
+* `max_depth`: PocketMine counts nested compounds and lists, root included, and treats 0 as
+  unlimited. nbt-zig counts every level, so a value inside the root compound is level 2. Use
+  `$maxDepth + 1`, or 512 for 0.
 
-Remaining differences, all cases where PocketMine accepts corrupt data:
+Remaining differences:
 
 * A negative list length reads as an empty list in PocketMine and fails here with
   `error.InvalidLength`.

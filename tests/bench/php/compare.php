@@ -1,9 +1,7 @@
 <?php
 
-// PHP half of the comparison, see docs/benchmarks.md. Reads the inputs written by
-// `zig build compare -- <dir>` so both sides decode the same bytes.
-//
-// php -d extension=encoding.so compare.php <dir> <pmmp/NBT>/src <pmmp/BinaryUtils>/src
+// php -d extension=encoding.so -d extension=nbt_bench.so compare.php <inputs> [pmmp/NBT/src] [pmmp/BinaryUtils/src]
+// <inputs> comes from `zig build compare -- <inputs>`. Missing extensions or sources are skipped.
 
 declare(strict_types=1);
 
@@ -20,7 +18,7 @@ const COUNT = 4096;
 
 [, $dir, $nbtSource, $utilsSource] = $argv + [null, null, null, null];
 if ($dir === null) {
-    fwrite(STDERR, "usage: php compare.php <input dir> [pmmp/NBT src] [pmmp/BinaryUtils src]\n");
+    fwrite(STDERR, "usage: php compare.php <inputs> [pmmp/NBT/src] [pmmp/BinaryUtils/src]\n");
     exit(1);
 }
 
@@ -43,21 +41,20 @@ function timed(callable $op, int $iterations): int
 function run(string $name, int $bytes, callable $op): void
 {
     $iterations = 1;
-    while (true) {
-        $elapsed = timed($op, $iterations);
-        if ($elapsed >= TARGET_NS / 4) {
-            $iterations = max(1, intdiv($iterations * TARGET_NS, $elapsed));
-            break;
-        }
-        $iterations *= 2;
-    }
+    while (($elapsed = timed($op, $iterations)) < TARGET_NS / 4) $iterations *= 2;
+    $iterations = max(1, intdiv($iterations * TARGET_NS, $elapsed));
 
     $samples = [];
     for ($i = 0; $i < BATCHES; ++$i) $samples[] = timed($op, $iterations) / $iterations;
     sort($samples);
 
     $median = $samples[intdiv(BATCHES, 2)];
-    printf("%-40s %12.1f %12.1f %12.1f %10.1f %8s\n", $name, $median, $samples[intdiv(BATCHES, 10)], $samples[intdiv(BATCHES * 9, 10)], $bytes / $median * 1e9 / 1048576, '-');
+    printf("%-52s %12.1f %12.1f %12.1f %10.1f\n", $name, $median, $samples[intdiv(BATCHES, 10)], $samples[intdiv(BATCHES * 9, 10)], $bytes / $median * 1e9 / 1048576);
+}
+
+function check(bool $ok, string $what): void
+{
+    if (!$ok) throw new RuntimeException($what);
 }
 
 function expected(string $set): array
@@ -74,56 +71,65 @@ function expected(string $set): array
     return $values;
 }
 
-printf("%-40s %12s %12s %12s %10s %8s\n", 'case', 'median ns', 'p10 ns', 'p90 ns', 'MiB/s', 'allocs');
+$encoding = extension_loaded('encoding');
+$zig = extension_loaded('nbt_bench');
+$pocketmine = $nbtSource !== null && $utilsSource !== null;
+
+printf("%-52s %12s %12s %12s %10s\n", 'case (ns per operation)', 'median', 'p10', 'p90', 'MiB/s');
 
 foreach (['small', 'mixed'] as $set) {
     $values = expected($set);
-    foreach ([['varint', 'varint', VarInt::class], ['LE', 'le', LE::class], ['BE', 'be', BE::class]] as [$label, $file, $codec]) {
+    foreach ([['varint', 'varint', VarInt::class, 2], ['LE', 'le', LE::class, 1], ['BE', 'be', BE::class, 0]] as [$label, $file, $codec, $format]) {
         $bytes = file_get_contents("$dir/$file-$set.bin");
-        $read = static function () use ($bytes, $codec): array {
-            $reader = new ByteBufferReader($bytes);
-            $count = $codec::readSignedInt($reader);
-            $out = [];
-            for ($i = 0; $i < $count; ++$i) $out[] = $codec::readSignedInt($reader);
-            return $out;
-        };
-        if ($read() !== $values) throw new RuntimeException("$label $set decoded wrong values");
-
-        $write = static function (ByteBufferWriter $writer) use ($values, $codec): void {
-            $codec::writeSignedInt($writer, count($values));
-            foreach ($values as $value) $codec::writeSignedInt($writer, $value);
-        };
-        $fresh = static function () use ($write): string {
-            $writer = new ByteBufferWriter();
-            $write($writer);
-            return $writer->getData();
-        };
-        if ($fresh() !== $bytes) throw new RuntimeException("$label $set encoded different bytes");
-
-        $reused = new ByteBufferWriter();
         $name = "$label int[" . COUNT . "] $set";
-        run("$name decode", strlen($bytes), $read);
-        run("$name encode", strlen($bytes), $fresh);
-        run("$name write to buffer", strlen($bytes), static function () use ($write, $reused): void {
-            $reused->clear();
-            $write($reused);
-        });
+
+        if ($encoding) {
+            $read = static function () use ($bytes, $codec): array {
+                $reader = new ByteBufferReader($bytes);
+                $count = $codec::readSignedInt($reader);
+                $out = [];
+                for ($i = 0; $i < $count; ++$i) $out[] = $codec::readSignedInt($reader);
+                return $out;
+            };
+            $write = static function () use ($values, $codec): string {
+                $writer = new ByteBufferWriter();
+                $codec::writeSignedInt($writer, count($values));
+                foreach ($values as $value) $codec::writeSignedInt($writer, $value);
+                return $writer->getData();
+            };
+            check($read() === $values && $write() === $bytes, "ext-encoding $name");
+            run("ext-encoding $name decode", strlen($bytes), $read);
+            run("ext-encoding $name encode", strlen($bytes), $write);
+        }
+
+        if ($zig) {
+            check(nbt_bench_decode_int_array($bytes, $format) === $values, "nbt-zig $name decode");
+            check(nbt_bench_encode_int_array($values, $format) === $bytes, "nbt-zig $name encode");
+            run("nbt-zig $name decode", strlen($bytes), static fn() => nbt_bench_decode_int_array($bytes, $format));
+            run("nbt-zig $name encode", strlen($bytes), static fn() => nbt_bench_encode_int_array($values, $format));
+        }
     }
 }
 
-if ($nbtSource === null || $utilsSource === null) exit(0);
-
-$serializer = new LittleEndianNbtSerializer();
+$serializer = $pocketmine ? new LittleEndianNbtSerializer() : null;
 foreach (['bedrock-item', 'bedrock-entity', 'bedrock-structure'] as $name) {
     $bytes = file_get_contents("$dir/$name.bin");
-    $root = $serializer->read($bytes);
-    if ($serializer->write($root) !== $bytes) throw new RuntimeException("$name did not round trip");
 
-    run("nbt $name read", strlen($bytes), static fn() => $serializer->read($bytes));
-    run("nbt $name write", strlen($bytes), static fn() => $serializer->write($root));
-    run("nbt $name consumed length", strlen($bytes), static function () use ($serializer, $bytes): int {
-        $offset = 0;
-        $serializer->read($bytes, $offset);
-        return $offset;
-    });
+    if ($serializer !== null) {
+        $root = $serializer->read($bytes);
+        check($serializer->write($root) === $bytes, "pocketmine $name round trip");
+        run("pocketmine nbt $name read", strlen($bytes), static fn() => $serializer->read($bytes));
+        run("pocketmine nbt $name write", strlen($bytes), static fn() => $serializer->write($root));
+        run("pocketmine nbt $name consumed length", strlen($bytes), static function () use ($serializer, $bytes): int {
+            $offset = 0;
+            $serializer->read($bytes, $offset);
+            return $offset;
+        });
+    }
+
+    if ($zig) {
+        check(nbt_bench_scan($bytes, 1) === strlen($bytes), "nbt-zig $name scan");
+        run("nbt-zig nbt $name read to arrays", strlen($bytes), static fn() => nbt_bench_decode($bytes, 1));
+        run("nbt-zig nbt $name consumed length", strlen($bytes), static fn() => nbt_bench_scan($bytes, 1));
+    }
 }

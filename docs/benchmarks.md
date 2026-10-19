@@ -50,50 +50,72 @@ with the same limits, in one `ReleaseFast` binary, fastest of 15 alternating bat
 | entity (2 KB) | 2,113 | 1,616 |
 | structure (11 KB) | 6,809 | 2,625 |
 
-## Against PocketMine and ext-encoding
+## Against ext-encoding and PocketMine
 
-ext-encoding is a PHP extension of byte buffer primitives, not an NBT codec, so the comparison
-has two parts. Both sides read the same bytes, which `zig build compare -- <dir>` writes out,
-and check their results before timing.
+ext-encoding is a PHP extension of byte buffer primitives rather than an NBT codec, so it is
+compared on what it does: reading and writing 4096 ints laid out as a TAG_Int_Array payload,
+in network varints, little endian and big endian. "small" values fit one varint byte and
+"mixed" span the whole int range. Every side reads the same bytes, written out by
+`zig build compare -- <dir>`, and checks its results before timing.
 
-* Primitive arrays: 4096 ints as a TAG_Int_Array payload. PHP reads and writes them with
-  ext-encoding's `VarInt`, `LE` and `BE` calls into a PHP array, nbt-zig with
-  `parsePayload`, `serializePayload` and `writePayload`.
-* NBT documents: PocketMine's `LittleEndianNbtSerializer` (pure PHP on BinaryUtils, the stack
-  PocketMine-MP ships) against `parse` and `serialize` with `raw_strings` and
-  `duplicate_names = .keep_first`, matching PocketMine's semantics. "Consumed length" is
-  `read()` with an offset in PHP, which must build the tree, and `scanDocument` in Zig.
+Environment: WSL2 Ubuntu 24.04 (kernel 6.6.87) on the same Ryzen 5 5500. PHP 8.4.14 NTS and
+ext-encoding `d5437b5` built with gcc 13.3 at `-O2`, pmmp/NBT `5429a21`, BinaryUtils
+`14c044a`, phpz `6a2ba0c`. Cells are medians of 31 batches of about 20 ms, in µs.
 
-Environment: WSL2 Ubuntu 24.04 (kernel 6.6.87). PHP 8.4.14 NTS built with gcc 13.3 at `-O2`,
-ext-encoding `d5437b5`, pmmp/NBT `5429a21`, BinaryUtils `14c044a`. Zig `ReleaseFast` for
-generic x86-64, which matches how ext-encoding was compiled, and for the native CPU. Cells are
-medians of 31 batches of about 20 ms in µs. p10 and p90 are in the raw output.
+### Inside PHP
 
-| Operation | PHP JIT | PHP no JIT | Zig x86-64 | Zig native |
+[tests/bench/php/ext](../tests/bench/php/ext) is a small phpz extension over nbt-zig. Calls
+from PHP 8.4 with the opcache tracing JIT:
+
+| Operation | ext-encoding | nbt-zig |
+| --- | ---: | ---: |
+| varint small decode | 104.3 | 3.2 |
+| varint small encode | 89.1 | 8.0 |
+| varint mixed decode | 99.5 | 13.0 |
+| varint mixed encode | 106.0 | 18.7 |
+| LE decode | 89.8 | 3.0 |
+| LE encode | 93.5 | 6.9 |
+| BE decode | 88.9 | 3.3 |
+| BE encode | 91.7 | 7.5 |
+
+ext-encoding reads one value per PHP call, while the extension converts the whole array in
+one. That per-call cost, not the codec, is most of the difference.
+
+Whole Bedrock documents, PocketMine's `LittleEndianNbtSerializer` against the extension.
+PocketMine builds its tag objects and the extension builds PHP arrays, so the two read rows
+are close in work rather than identical. "Length" is `read()` with an offset in PocketMine,
+which has to build the tree, and the scanner in nbt-zig.
+
+| Document | PocketMine read | nbt-zig read | PocketMine length | nbt-zig length |
 | --- | ---: | ---: | ---: | ---: |
-| varint int[4096] small decode | 67.9 | 115.6 | 0.64 | 0.42 |
-| varint int[4096] small encode | 70.0 | 111.7 | 1.02 | 0.81 |
-| varint int[4096] mixed decode | 82.9 | 124.0 | 10.0 | 10.4 |
-| varint int[4096] mixed encode | 108.5 | 115.4 | 10.9 | 10.8 |
-| LE int[4096] decode | 70.4 | 117.3 | 0.32 | 0.23 |
-| LE int[4096] encode | 82.1 | 117.3 | 0.33 | 0.22 |
-| BE int[4096] decode | 83.5 | 120.8 | 1.24 | 0.33 |
-| BE int[4096] encode | 93.6 | 120.8 | 1.25 | 0.39 |
-| bedrock-item read | 16.8 | 18.8 | 0.68 | 0.79 |
-| bedrock-item write | 4.7 | 7.1 | 0.36 | 0.39 |
-| bedrock-item consumed length | 14.9 | 20.4 | 0.05 | 0.06 |
-| bedrock-entity read | 141.1 | 224.7 | 7.2 | 7.5 |
-| bedrock-entity write | 44.9 | 74.4 | 3.8 | 4.2 |
-| bedrock-structure read | 409.8 | 595.2 | 10.4 | 11.0 |
-| bedrock-structure write | 122.9 | 168.5 | 46.5 | 48.6 |
+| item (203 B) | 13.9 | 1.2 | 13.6 | 0.09 |
+| entity (2.3 KB) | 147.0 | 13.0 | 149.7 | 0.68 |
+| structure (36 KB) | 423.3 | 24.4 | 432.4 | 0.95 |
 
-"small" values fit one varint byte, "mixed" span the whole int range. Generic x86-64 has no
-vector byte shuffle, hence the slower big-endian arrays there. The structure write on Linux
-is dominated by allocating and faulting in a fresh 36 KB output buffer each time. The `write`
-row of `zig build bench`, which reuses a buffer, puts the same document at about 5 µs on Windows. nbt-zig parses into a Zig tree while PocketMine builds
-PHP objects, so the document rows compare the work each stack has to do, not identical output.
+Without the JIT, PocketMine is 1.35 to 1.5 times slower while ext-encoding and nbt-zig barely
+change. Full output, including p10 and p90, comes from `tests/bench/php/compare.php`.
 
-Not measured: PHP calling nbt-zig, since no PHP binding exists yet. See [php.md](php.md).
+### Native
+
+[tests/bench/native/ext_encoding.cpp](../tests/bench/native/ext_encoding.cpp) compiles
+ext-encoding's own `Serializers.h` and drives its readers and writers directly against
+nbt-zig's `parsePayload` and `serializePayload`. ext-encoding decodes into a reused vector
+while nbt-zig allocates each time, which favours ext-encoding.
+
+| Operation | ext-encoding `-O2` | ext-encoding native | nbt-zig x86-64 | nbt-zig native |
+| --- | ---: | ---: | ---: | ---: |
+| varint small decode | 4.60 | 4.47 | 0.67 | 0.42 |
+| varint small encode | 8.47 | 6.40 | 1.01 | 0.80 |
+| varint mixed decode | 14.8 | 14.7 | 9.7 | 9.8 |
+| varint mixed encode | 18.3 | 17.9 | 11.6 | 11.0 |
+| LE decode | 0.20 | 0.20 | 0.33 | 0.23 |
+| LE encode | 0.59 | 0.56 | 0.33 | 0.22 |
+| BE decode | 1.45 | 1.23 | 1.25 | 0.34 |
+| BE encode | 1.81 | 1.59 | 1.26 | 0.47 |
+
+Little endian decode is a plain copy on both sides. glibc picks AVX2 for ext-encoding's copy at
+run time, while generic x86-64 Zig is held to SSE2 and also allocates its result. Generic
+x86-64 has no vector byte shuffle either, hence the slower big endian rows there.
 
 ## Stack use
 
@@ -115,8 +137,14 @@ in Debug for a small document, because std's deflate state is built on the calle
 ```sh
 zig build bench                       # all workloads
 zig build bench -- network            # names containing "network"
-zig build compare -- /tmp/nbt-inputs  # Zig half, also writes the shared inputs
-php -d extension=encoding.so tests/bench/php/compare.php /tmp/nbt-inputs NBT/src BinaryUtils/src
+zig build compare -- /tmp/nbt-inputs  # nbt-zig natively, also writes the shared inputs
+
+cd tests/bench/php/ext && zig build -Doptimize=ReleaseFast -Dphp-include-dir="$(php-config --include-dir)"
+php -d extension=encoding.so -d extension=tests/bench/php/ext/modules/nbt_bench.so     tests/bench/php/compare.php /tmp/nbt-inputs NBT/src BinaryUtils/src
+
+cp ext-encoding/Serializers.h tests/bench/native/shim/
+g++ -O2 -std=c++20 -Itests/bench/native/shim tests/bench/native/ext_encoding.cpp -o ext_encoding
+./ext_encoding /tmp/nbt-inputs
 ```
 
 Compare like with like: same machine, inputs, allocator, compiler and build mode.

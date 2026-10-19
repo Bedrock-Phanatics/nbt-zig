@@ -54,6 +54,9 @@ cross the boundary once per document, not once per tag:
   fixed `std.Io.Writer`, so the output is never copied.
 * `length(string $buffer, int $offset): int` can expose `scanDocument` directly.
 
+[tests/bench/php/ext](../tests/bench/php/ext) is a small phpz extension built this way, used
+for the PHP benchmarks.
+
 A C ABI is not provided. A phpz extension imports the Zig module directly, and a C interface
 for trees would duplicate the tree types without serving another caller. If one is added,
 it should map every error to a status code and never let a Zig error or panic cross the

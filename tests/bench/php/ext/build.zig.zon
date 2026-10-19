@@ -1,0 +1,21 @@
+.{
+    .name = .nbt_bench,
+    .version = "0.1.0",
+    .fingerprint = 0xa563b37ce94e9976,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .nbt = .{ .path = "../../../.." },
+        .phpz = .{
+            .url = "git+https://github.com/TrixNEW/phpz#6a2ba0c0a03d69f8fb9bbfb8855ead3b9dda137f",
+            .hash = "phpz-0.1.0-D3BhOMKSFADSaCwelZeFzt2YrcxZ4LonpEekE7OdUHAT",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "nbt_bench.h",
+        "nbt_bench.stub.php",
+        "nbt_bench_arginfo.h",
+    },
+}

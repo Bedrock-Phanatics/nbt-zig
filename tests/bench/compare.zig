@@ -1,6 +1,3 @@
-//! Zig half of the ext-encoding and PocketMine comparison. tests/bench/php/compare.php
-//! runs the same operations on the same bytes, see docs/benchmarks.md.
-
 const std = @import("std");
 const nbt = @import("nbt");
 const fixtures = @import("fixtures");
@@ -128,7 +125,6 @@ const Context = struct {
 };
 
 fn run(name: []const u8, bytes_per_op: usize, context: Context, comptime op: fn (Context) anyerror!void) !void {
-    // Size batches so each takes about target_batch_ns, after a warmup.
     var iterations: usize = 1;
     while (true) {
         const elapsed = try timed(context, op, iterations);

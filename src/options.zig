@@ -12,7 +12,7 @@ pub const Compression = enum {
     zlib,
 };
 
-/// Encoding and string handling together, so codecs can specialize on both at compile time.
+/// Lets codecs specialize on encoding and string handling at compile time.
 pub const Format = enum {
     java,
     bedrock,
@@ -31,7 +31,6 @@ pub const Format = enum {
 };
 
 pub const DuplicateNames = enum {
-    /// Fail with `error.DuplicateName`.
     reject,
     /// Keep the first value and drop later ones, like PocketMine does for old worlds.
     keep_first,

@@ -22,12 +22,10 @@ const TagType = types.TagType;
 pub const Error = types.CodecError || Allocator.Error;
 pub const WriteError = Error || std.Io.Writer.Error;
 
-/// Expects validated options.
 pub fn encode(allocator: Allocator, document: Document, options: Options) Error![]u8 {
     return encodeWith(allocator, document, options, write);
 }
 
-/// Encodes a headerless payload. Expects validated options.
 pub fn encodePayload(allocator: Allocator, tag: Tag, options: Options) Error![]u8 {
     return encodeWith(allocator, tag, options, writePayload);
 }
@@ -53,7 +51,6 @@ fn encodeWith(
     return output.toOwnedSlice();
 }
 
-/// Expects validated options.
 pub fn write(allocator: Allocator, writer: *std.Io.Writer, document: Document, options: Options) WriteError!void {
     switch (options.format()) {
         inline else => |format| {
@@ -65,7 +62,6 @@ pub fn write(allocator: Allocator, writer: *std.Io.Writer, document: Document, o
     }
 }
 
-/// Writes a headerless payload. Expects validated options.
 pub fn writePayload(allocator: Allocator, writer: *std.Io.Writer, tag: Tag, options: Options) WriteError!void {
     switch (options.format()) {
         inline else => |format| {
@@ -214,13 +210,13 @@ fn Encoder(comptime format: Format) type {
             self.written = end;
         }
 
-        /// Claims `len` bytes of the writer's spare capacity to fill in place, if they fit.
         /// Writable capacity that is also within the output limit.
         fn spare(self: *Self) []u8 {
             const w = self.writer;
             return w.buffer[w.end..][0..@min(w.buffer.len - w.end, self.options.max_output_bytes -| self.written)];
         }
 
+        /// Claims `len` bytes of spare capacity to fill in place, if they fit.
         fn direct(self: *Self, len: usize) ?[]u8 {
             const w = self.writer;
             const end = std.math.add(usize, self.written, len) catch return null;
@@ -304,8 +300,7 @@ fn Encoder(comptime format: Format) type {
             while (iterator.nextCodepoint()) |codepoint| try self.bytes(utf8.encodeModified(codepoint, &buffer));
         }
 
-        /// Every nesting level passes through here, so containers and owned values are
-        /// handled out of line to keep this frame small.
+        /// Containers and owned values go out of line to keep each nesting level's frame small.
         fn payload(self: *Self, tag: *const Tag, depth: usize) WriteError!void {
             switch (tag.*) {
                 .end => return error.InvalidTag,
@@ -330,7 +325,7 @@ fn Encoder(comptime format: Format) type {
             }
         }
 
-        /// Writes zigzag varints, turning runs of one-byte values into single 16-byte writes.
+        /// Turns runs of one-byte values into single 16-byte writes.
         fn zigzags(self: *Self, comptime T: type, values: []const T) WriteError!void {
             const lanes = 16;
             const Unsigned = @Int(.unsigned, @bitSizeOf(T));

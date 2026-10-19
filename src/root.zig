@@ -52,9 +52,8 @@ pub fn parse(allocator: Allocator, input: []const u8, opts: Options) Error!Docum
     return (try decode.decode(allocator, try plain.written(), opts)).document;
 }
 
-/// Parses the uncompressed document at the start of `input` and reports how many bytes
-/// it used, for documents inside a larger buffer or several in a row. Reading stops at
-/// `max_input_bytes` like the scanner.
+/// Parses the uncompressed document at the start of `input` and reports the bytes it used.
+/// Reading stops at `max_input_bytes`, like the scanner.
 pub fn parsePrefix(allocator: Allocator, input: []const u8, opts: Options) Error!Parsed {
     try checkPlain(opts);
     return clipped(input, opts, decode.decode(allocator, clip(input, opts), opts));
@@ -99,7 +98,7 @@ pub fn serializePayload(allocator: Allocator, tag: Tag, opts: Options) Error![]u
 }
 
 /// Exact uncompressed size `serialize` gives a `Document`, or `serializePayload` a `Tag`,
-/// whenever they succeed. Handy for writing straight into a buffer of the right size.
+/// whenever they succeed.
 pub fn encodedLength(value: anytype, opts: Options) Error!usize {
     try opts.validate();
     return encode.encodedLength(value, opts);
@@ -120,8 +119,7 @@ pub fn parseReader(allocator: Allocator, reader: *std.Io.Reader, opts: Options) 
     return parse(allocator, try input.written(), opts);
 }
 
-/// Streams uncompressed NBT, compressed output is buffered first. Does not flush,
-/// and an error can leave partial output behind.
+/// Compressed output is buffered first. Does not flush, and an error can leave partial output.
 pub fn writeDocument(
     allocator: Allocator,
     writer: *std.Io.Writer,

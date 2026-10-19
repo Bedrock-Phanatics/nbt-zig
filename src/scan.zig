@@ -1,12 +1,3 @@
-//! Validates NBT in place and reports how many bytes it spans, without building a tree
-//! or touching an allocator.
-//!
-//! The scanner applies the same checks and limits as the tree decoder with two
-//! exceptions, because both need memory proportional to the input: duplicate
-//! compound names are not detected and `max_total_decoded_bytes` is not charged.
-//! `max_input_bytes` caps how far a scan may read, so a document that would run past
-//! it fails with `error.SizeLimitExceeded` even when more input follows.
-
 const std = @import("std");
 
 const options_mod = @import("options.zig");
@@ -19,7 +10,8 @@ const utf8 = @import("utf8.zig");
 
 pub const Error = types.CodecError;
 
-/// Scans the named document at the start of `input`.
+/// Returns the length of the document at the start of `input`. Checks everything `parse` does
+/// except duplicate names and `max_total_decoded_bytes`, which would need memory.
 pub fn scanDocument(input: []const u8, options: Options) Error!usize {
     return run(input, options, .document);
 }
@@ -30,7 +22,6 @@ pub fn scanOptionalDocument(input: []const u8, options: Options) Error!usize {
     return run(input, options, .optional_document);
 }
 
-/// Scans a headerless payload whose type the caller already knows.
 pub fn scanPayload(input: []const u8, tag_type: TagType, options: Options) Error!usize {
     return run(input, options, .{ .payload = tag_type });
 }

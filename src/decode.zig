@@ -29,14 +29,12 @@ pub const DecodedPayload = struct {
     len: usize,
 };
 
-/// Expects validated options.
 pub fn decode(allocator: Allocator, data: []const u8, options: Options) Error!Decoded {
     return switch (options.format()) {
         inline else => |format| Decoder(format).document(allocator, data, options),
     };
 }
 
-/// Decodes a headerless payload of a known type. Expects validated options.
 pub fn decodePayload(allocator: Allocator, data: []const u8, tag_type: TagType, options: Options) Error!DecodedPayload {
     return switch (options.format()) {
         inline else => |format| Decoder(format).headless(allocator, data, tag_type, options),
@@ -165,7 +163,7 @@ fn Decoder(comptime format: Format) type {
             return @bitCast((value >> 1) ^ (0 -% (value & 1)));
         }
 
-        /// Fills `out` with zigzag varints, converting runs of one-byte values 16 at a time.
+        /// Converts runs of one-byte values 16 at a time.
         fn zigzags(self: *Self, comptime T: type, out: []T) Error!void {
             const lanes = 16;
             const Unsigned = @Int(.unsigned, @bitSizeOf(T));
@@ -269,9 +267,7 @@ fn Decoder(comptime format: Format) type {
             return self.allocator.dupe(u8, encoded);
         }
 
-        /// Every nesting level passes through here, so results go straight to `out`
-        /// rather than through temporaries that would grow each stack frame. `out` is only
-        /// written on success.
+        /// Writes through `out`, only on success, so each nesting level carries no result temporaries.
         fn payload(self: *Self, tag_type: TagType, depth: usize, out: *Tag) Error!void {
             switch (tag_type) {
                 .end => return error.InvalidTag,
@@ -428,8 +424,7 @@ fn Decoder(comptime format: Format) type {
             };
         }
 
-        /// Out of line so its hashing does not bloat every level of the recursion. On error
-        /// the caller still frees the entries from `start` on.
+        /// On error the caller still frees the entries from `start` on.
         noinline fn closeCompound(self: *Self, start: usize) Error!Tag {
             var fields = self.entries.items[start..];
             switch (self.options.duplicate_names) {

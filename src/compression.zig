@@ -21,7 +21,7 @@ const CompressWorkspace = struct {
     compressor: flate.Compress,
 };
 
-/// `kind` must not be `.none`. Kept out of line so callers on the plain path stay lean.
+/// Kept out of line so the uncompressed path stays lean.
 pub noinline fn compress(allocator: Allocator, input: []const u8, kind: Compression, max_output: usize) (Error || Allocator.Error)![]u8 {
     std.debug.assert(kind != .none);
     if (max_output < 9) return error.SizeLimitExceeded;
@@ -52,7 +52,6 @@ fn deflate(output: *std.Io.Writer, workspace: *CompressWorkspace, input: []const
 }
 
 /// Returns the decompressed bytes in a writer the caller must deinit.
-/// `kind` must not be `.none`. Kept out of line like `compress`.
 pub noinline fn decompress(
     allocator: Allocator,
     input: []const u8,

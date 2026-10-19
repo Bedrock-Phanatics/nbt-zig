@@ -5,7 +5,6 @@ const fixtures = @import("fixtures");
 const testing = std.testing;
 const encodings = [_]nbt.Options{ .java, .bedrock, .bedrock_network };
 
-/// One of every tag type, including nested containers and strings that need modified UTF-8.
 fn sampleDocument(allocator: std.mem.Allocator) !nbt.Document {
     var root = nbt.builder.Compound.init(allocator);
     defer root.deinit();

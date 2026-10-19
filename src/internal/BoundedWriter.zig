@@ -1,6 +1,3 @@
-//! Growable in-memory writer that never accepts more than `limit` bytes.
-//! When it returns `WriteFailed`, `failure` says why.
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;
@@ -10,6 +7,7 @@ const BoundedWriter = @This();
 allocator: Allocator,
 writer: Writer,
 limit: usize,
+/// Why the last `WriteFailed` happened.
 failure: Failure = .none,
 
 pub const Failure = enum {
@@ -48,7 +46,6 @@ pub fn deinit(self: *BoundedWriter) void {
     self.* = undefined;
 }
 
-/// Turns the last `WriteFailed` into a meaningful error.
 pub fn err(self: *const BoundedWriter) Error {
     return switch (self.failure) {
         .limit => error.SizeLimitExceeded,

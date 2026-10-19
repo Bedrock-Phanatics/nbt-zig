@@ -1,22 +1,16 @@
 # nbt-zig
 
-Fast, allocation-conscious [NBT](https://minecraft.wiki/w/NBT_format) for Zig 0.17, covering
-Java, Bedrock and Bedrock network encodings.
+A fast, allocation-aware [NBT](https://minecraft.wiki/w/NBT_format) library for Zig 0.17.
 
 <p align="center">
   <a href="https://discord.gg/Yv9qPRQNc3">Join the Bedrock Phanatics Discord</a>
 </p>
 
-## Features
-
-* Java (big endian, modified UTF-8), Bedrock (little endian) and Bedrock network (varint) NBT
-* Gzip and zlib with checksum, header and decompression-size validation
-* A scanner that validates NBT and reports its length without allocating
-* Owned trees with explicit allocators, plus builders that never leak on failure
-* Headerless payloads, documents inside larger buffers and exact encoded sizes
-* Configurable limits for depth, lengths, strings, input and output sizes
-* PocketMine compatibility options: raw strings and keep-first duplicate names
-* Tested in every build mode, fuzzed, and differentially checked against itself
+- Java, Bedrock and Bedrock network encodings, plus gzip and zlib
+- A validating scanner that never allocates
+- Owned trees, leak-free builders, headerless payloads and exact encoded sizes
+- Configurable limits for every length, depth and size
+- PocketMine compatible options for raw strings and duplicate names
 
 ## Installation
 
@@ -32,70 +26,61 @@ module.addImport("nbt", nbt.module("nbt"));
 ## Usage
 
 ```zig
-const std = @import("std");
-const nbt = @import("nbt");
+var document = try nbt.parse(allocator, bytes, .bedrock);
+defer document.deinit(allocator);
 
-fn roundTrip(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    var document = try nbt.parse(allocator, bytes, .bedrock);
-    defer document.deinit(allocator);
+if (document.root.compound.get("Name")) |name| std.debug.print("{s}\n", .{name.string});
 
-    if (document.root.compound.get("Name")) |name| std.debug.print("{s}\n", .{name.string});
-
-    return nbt.serialize(allocator, document, .bedrock);
-}
+const encoded = try nbt.serialize(allocator, document, .java);
+defer allocator.free(encoded);
 ```
 
-Checking untrusted network NBT without building a tree:
+Building a document:
+
+```zig
+var root = nbt.builder.Compound.init(allocator);
+defer root.deinit();
+try root.add("Count", .{ .byte = 64 });
+try root.add("Damage", .{ .short = 3 });
+
+var document = try nbt.Document.init(allocator, "", try root.finish());
+defer document.deinit(allocator);
+```
+
+Checking untrusted input without building a tree:
 
 ```zig
 var options = nbt.Options.bedrock_network;
 options.max_depth = 64;
-options.max_input_bytes = 64 * 1024;
 
 const len = try nbt.scanOptionalDocument(packet[offset..], options);
-const document_bytes = packet[offset..][0..len];
+const nbt_bytes = packet[offset..][0..len];
 ```
 
 ## API
 
-| Function | Purpose |
+| | |
 | --- | --- |
 | `parse`, `serialize` | Whole documents, optionally compressed |
-| `parsePrefix` | A document at the start of a buffer, plus how many bytes it used |
+| `parsePrefix` | A document at the start of a buffer and the bytes it used |
 | `parsePayload`, `serializePayload` | Headerless payloads of a known tag type |
 | `parseReader`, `writeDocument`, `writePayload` | `std.Io` readers and writers |
 | `scanDocument`, `scanOptionalDocument`, `scanPayload` | Validate and measure without allocating |
-| `encodedLength` | Exact uncompressed size of a document or tag |
-| `builder` | Build strings, arrays, lists and compounds |
+| `encodedLength` | Exact output size, for writing into a caller's buffer |
+| `builder` | Strings, arrays, lists and compounds |
+| `Options` | Encoding, compression, limits and compatibility switches |
 
-Presets are `nbt.Options.java`, `.bedrock` and `.bedrock_network`. Set `compression` to `.gzip`
-or `.zlib` for compressed documents.
+Trees own their memory and are freed with `deinit` and the allocator that built them.
+Serialization only borrows them.
 
-Parsed trees own all their memory, free them with `deinit` and the same allocator. An arena
-works well for batches. Serialization borrows the tree. Builders copy names and take values
-only when they succeed.
+The scanner checks everything `parse` does except duplicate names and
+`max_total_decoded_bytes`, which would need memory, and it never reads past
+`max_input_bytes`. `scanOptionalDocument` also accepts the lone TAG_End Bedrock uses for
+absent NBT.
 
-### Scanner
-
-The scanner walks NBT in place with a fixed 2.5 KiB stack and never touches an allocator, so it
-suits packet decoding and quick validation. It applies the same checks and limits as `parse`,
-with two deliberate exceptions, since both need memory that grows with the input: duplicate
-compound names are not detected, and `max_total_decoded_bytes` is not charged. Reading past
-`max_input_bytes` fails with `error.SizeLimitExceeded`, so a scan never wanders into the rest
-of a buffer. `scanOptionalDocument` also accepts the lone TAG_End that Bedrock sends for absent
-NBT. Concatenated documents are walked by scanning `input[offset..]` and adding the result.
-
-Compressed input is not scanned. Decompress it first, which does allocate.
-
-### Limits
-
-`Options` bounds nesting depth (at most 512), collection lengths, compound entries, string and
-byte array lengths, input, decompressed and output sizes, and the bytes a parse may allocate.
-Malformed, truncated and oversized input fails with an error, never a crash. Parsing and
-serializing recurse on the native stack, about 112 KiB at depth 512 in optimized builds and
-several MiB in Debug, so lower `max_depth` for small thread stacks. The scanner needs 16 KiB.
-Compressing also places std's roughly 230 KB deflate state on the stack, so compressed
-serialization needs about 256 KiB in optimized builds. Decompression needs little.
+Parsing and serializing recurse, needing about 112 KiB of stack at the maximum depth of 512
+in optimized builds. Compressed serialization needs about 256 KiB for std's deflate state.
+The scanner needs 16 KiB.
 
 ## Development
 
@@ -105,8 +90,8 @@ zig build fuzz
 zig build bench
 ```
 
-[docs/benchmarks.md](docs/benchmarks.md) has measurements, including against PocketMine and
-ext-encoding, and [docs/php.md](docs/php.md) covers PHP extension use.
+See [docs/benchmarks.md](docs/benchmarks.md) for measurements against ext-encoding and
+PocketMine, and [docs/php.md](docs/php.md) for PHP extension use.
 
 ## License
 

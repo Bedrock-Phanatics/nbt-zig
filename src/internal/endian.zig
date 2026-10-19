@@ -1,4 +1,3 @@
-/// Byte swaps every element in place, a vector at a time.
 pub fn swapAll(comptime T: type, items: []align(1) T) void {
     const lanes = 32 / @sizeOf(T);
     var index: usize = 0;

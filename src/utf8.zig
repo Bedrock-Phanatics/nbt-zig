@@ -1,6 +1,3 @@
-//! UTF-8 checks plus Java's modified UTF-8, where NUL is two bytes and
-//! supplementary characters are surrogate pairs.
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
